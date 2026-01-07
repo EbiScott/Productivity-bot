@@ -432,6 +432,8 @@ def get_service_account_email() -> str:
             return 'ERROR: Invalid GOOGLE_CREDENTIALS'
     
     return creds_dict.get('client_email', 'ERROR: Email not found')
+    except:
+        return 'ERROR: Configure GOOGLE_CREDENTIALS'
 
 
 async def sheet_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -602,26 +604,44 @@ async def set_goal(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     
     activity = context.args[0].lower()
-    try:
-        target = int(context.args[1])
-    except:
-        await update.message.reply_text("Invalid number!")
-        return
     
-    # Check for period argument (default to weekly)
-    period = 'week'
-    if len(context.args) >= 3:
-        period_arg = context.args[2].lower()
-        if period_arg in ['daily', 'day', 'd']:
-            period = 'day'
-        elif period_arg in ['weekly', 'week', 'w']:
-            period = 'week'
-        else:
-            await update.message.reply_text(
-                "Invalid period! Use 'daily' or 'weekly'\n\n"
-                "Example: `/setgoal exercise 30 daily`"
-            )
-            return
+    # Try to parse the target number
+    target = None
+    period = 'week'  # default
+    
+    # Find the number in args
+    for i, arg in enumerate(context.args[1:], start=1):
+        # Remove common punctuation
+        cleaned_arg = arg.strip('()[]{}').lower()
+        
+        # Try to parse as number
+        try:
+            target = int(cleaned_arg)
+            # Found the number, now check for period in remaining args
+            for remaining_arg in context.args[i+1:]:
+                cleaned_remaining = remaining_arg.strip('()[]{}').lower()
+                if cleaned_remaining in ['daily', 'day', 'd']:
+                    period = 'day'
+                    break
+                elif cleaned_remaining in ['weekly', 'week', 'w']:
+                    period = 'week'
+                    break
+            break
+        except ValueError:
+            # Check if this arg is a period keyword
+            if cleaned_arg in ['daily', 'day', 'd']:
+                period = 'day'
+            elif cleaned_arg in ['weekly', 'week', 'w']:
+                period = 'week'
+            continue
+    
+    if target is None:
+        await update.message.reply_text(
+            "❌ Couldn't find a valid number!\n\n"
+            "Usage: `/setgoal <activity> <minutes> [period]`\n"
+            "Example: `/setgoal pray 45 daily`"
+        )
+        return
     
     if db.set_goal(activity, target, period):
         h, m = target // 60, target % 60
