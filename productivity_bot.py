@@ -30,8 +30,8 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# File to persist user connections
-USER_CONNECTIONS_FILE = 'user_connections.json'
+# File to persist user connections - use absolute path
+USER_CONNECTIONS_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'user_connections.json')
 
 # Store user sheet URLs and connections
 user_sheets: Dict[int, gspread.Spreadsheet] = {}
@@ -42,27 +42,32 @@ def load_user_connections():
     """Load user connections from JSON file"""
     global user_sheet_urls
     
+    logger.info(f"Attempting to load connections from: {USER_CONNECTIONS_FILE}")
+    
     if os.path.exists(USER_CONNECTIONS_FILE):
         try:
             with open(USER_CONNECTIONS_FILE, 'r') as f:
                 data = json.load(f)
                 # Convert string keys back to integers
                 user_sheet_urls = {int(k): v for k, v in data.items()}
-                logger.info(f"Loaded {len(user_sheet_urls)} user connections from file")
+                logger.info(f"✅ Loaded {len(user_sheet_urls)} user connections from file")
                 
                 # Reconnect to all sheets
-                client = get_sheets_client()
-                for user_id, sheet_url in user_sheet_urls.items():
-                    try:
-                        user_sheets[user_id] = SimpleMultiUserDB(sheet_url, client)
-                        logger.info(f"Reconnected sheet for user {user_id}")
-                    except Exception as e:
-                        logger.error(f"Failed to reconnect sheet for user {user_id}: {e}")
-                        
+                try:
+                    client = get_sheets_client()
+                    for user_id, sheet_url in user_sheet_urls.items():
+                        try:
+                            user_sheets[user_id] = SimpleMultiUserDB(sheet_url, client)
+                            logger.info(f"✅ Reconnected sheet for user {user_id}")
+                        except Exception as e:
+                            logger.error(f"❌ Failed to reconnect sheet for user {user_id}: {e}")
+                except Exception as e:
+                    logger.error(f"❌ Failed to get sheets client: {e}")
+                    
         except Exception as e:
-            logger.error(f"Error loading user connections: {e}")
+            logger.error(f"❌ Error loading user connections: {e}")
     else:
-        logger.info("No existing user connections file found")
+        logger.info(f"ℹ️ No existing user connections file found at {USER_CONNECTIONS_FILE}")
 
 
 def save_user_connections():
@@ -70,11 +75,15 @@ def save_user_connections():
     try:
         # Convert integer keys to strings for JSON
         data = {str(k): v for k, v in user_sheet_urls.items()}
+        
+        # Ensure directory exists
+        os.makedirs(os.path.dirname(USER_CONNECTIONS_FILE) or '.', exist_ok=True)
+        
         with open(USER_CONNECTIONS_FILE, 'w') as f:
             json.dump(data, f, indent=2)
-        logger.info(f"Saved {len(user_sheet_urls)} user connections to file")
+        logger.info(f"✅ Saved {len(user_sheet_urls)} user connections to {USER_CONNECTIONS_FILE}")
     except Exception as e:
-        logger.error(f"Error saving user connections: {e}")
+        logger.error(f"❌ Error saving user connections: {e}")
 
 
 class SimpleMultiUserDB:
@@ -225,20 +234,17 @@ class SimpleMultiUserDB:
     def set_goal(self, activity_name: str, target_minutes: int, period: str = 'week') -> bool:
         try:
             all_records = self.goals_sheet.get_all_records()
-            
-            # Check if goal already exists for this activity+period combo
             for i, record in enumerate(all_records, start=2):
-                if record['Activity Name'].lower() == activity_name.lower() and record['Period'].lower() == period.lower():
-                    # Update existing goal
-                    self.goals_sheet.update_cell(i, 2, target_minutes)  # Update target
-                    self.goals_sheet.update_cell(i, 4, 'TRUE')  # Mark as active
-                    return True
+                if record['Activity Name'] == activity_name and record['Period'] == period:
+                    self.goals_sheet.update_cell(i, 4, 'FALSE')
             
-            # If not found, add new goal
             self.goals_sheet.append_row([activity_name, target_minutes, period, 'TRUE'])
+            logger.info(f"Goal set successfully: {activity_name} {target_minutes}m {period}")
             return True
         except Exception as e:
-            logger.error(f"Error setting goal: {e}")
+            logger.error(f"Error setting goal for {activity_name}: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
             return False
     
     def get_active_goals(self) -> List[Tuple]:
@@ -440,7 +446,6 @@ def get_service_account_email() -> str:
     return creds_dict.get('client_email', 'ERROR: Email not found')
 
 
-
 async def sheet_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Send link to user's spreadsheet"""
     user_id = update.effective_user.id
@@ -609,27 +614,44 @@ async def set_goal(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     
     activity = context.args[0].lower()
-    period = 'week'  # default
-    target = None
     
-    # Parse target (should be second arg)
-    try:
-        target = int(context.args[1])
-    except (ValueError, IndexError):
+    # Try to parse the target number
+    target = None
+    period = 'week'  # default
+    
+    # Find the number in args
+    for i, arg in enumerate(context.args[1:], start=1):
+        # Remove common punctuation
+        cleaned_arg = arg.strip('()[]{}').lower()
+        
+        # Try to parse as number
+        try:
+            target = int(cleaned_arg)
+            # Found the number, now check for period in remaining args
+            for remaining_arg in context.args[i+1:]:
+                cleaned_remaining = remaining_arg.strip('()[]{}').lower()
+                if cleaned_remaining in ['daily', 'day', 'd']:
+                    period = 'day'
+                    break
+                elif cleaned_remaining in ['weekly', 'week', 'w']:
+                    period = 'week'
+                    break
+            break
+        except ValueError:
+            # Check if this arg is a period keyword
+            if cleaned_arg in ['daily', 'day', 'd']:
+                period = 'day'
+            elif cleaned_arg in ['weekly', 'week', 'w']:
+                period = 'week'
+            continue
+    
+    if target is None:
         await update.message.reply_text(
-            "❌ Second argument must be a number!\n\n"
+            "❌ Couldn't find a valid number!\n\n"
             "Usage: `/setgoal <activity> <minutes> [period]`\n"
             "Example: `/setgoal pray 45 daily`"
         )
         return
-    
-    # Parse period (optional third arg)
-    if len(context.args) >= 3:
-        period_arg = context.args[2].lower().strip('()[]{}')
-        if period_arg in ['daily', 'day', 'd']:
-            period = 'day'
-        elif period_arg in ['weekly', 'week', 'w']:
-            period = 'week'
     
     if db.set_goal(activity, target, period):
         h, m = target // 60, target % 60
@@ -639,7 +661,13 @@ async def set_goal(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"✅ Goal set!\n{activity.title()}: {time}/{period_text} 💪"
         )
     else:
-        await update.message.reply_text("❌ Failed to set goal! Check your sheet permissions.")
+        await update.message.reply_text(
+            "❌ Failed to set goal!\n\n"
+            "Possible issues:\n"
+            "• Check your Google Sheet permissions\n"
+            "• Make sure the 'Goals' sheet exists\n"
+            "• Try reconnecting: /disconnect then /connect"
+        )
 
 
 async def streak_info(update: Update, context: ContextTypes.DEFAULT_TYPE):
