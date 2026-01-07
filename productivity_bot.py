@@ -225,14 +225,20 @@ class SimpleMultiUserDB:
     def set_goal(self, activity_name: str, target_minutes: int, period: str = 'week') -> bool:
         try:
             all_records = self.goals_sheet.get_all_records()
-            for i, record in enumerate(all_records, start=2):
-                if record['Activity Name'] == activity_name and record['Period'] == period:
-                    self.goals_sheet.update_cell(i, 4, 'FALSE')
             
+            # Check if goal already exists for this activity+period combo
+            for i, record in enumerate(all_records, start=2):
+                if record['Activity Name'].lower() == activity_name.lower() and record['Period'].lower() == period.lower():
+                    # Update existing goal
+                    self.goals_sheet.update_cell(i, 2, target_minutes)  # Update target
+                    self.goals_sheet.update_cell(i, 4, 'TRUE')  # Mark as active
+                    return True
+            
+            # If not found, add new goal
             self.goals_sheet.append_row([activity_name, target_minutes, period, 'TRUE'])
             return True
         except Exception as e:
-            logger.error(f"Error: {e}")
+            logger.error(f"Error setting goal: {e}")
             return False
     
     def get_active_goals(self) -> List[Tuple]:
