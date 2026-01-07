@@ -603,44 +603,27 @@ async def set_goal(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     
     activity = context.args[0].lower()
-    
-    # Try to parse the target number
-    target = None
     period = 'week'  # default
+    target = None
     
-    # Find the number in args
-    for i, arg in enumerate(context.args[1:], start=1):
-        # Remove common punctuation
-        cleaned_arg = arg.strip('()[]{}').lower()
-        
-        # Try to parse as number
-        try:
-            target = int(cleaned_arg)
-            # Found the number, now check for period in remaining args
-            for remaining_arg in context.args[i+1:]:
-                cleaned_remaining = remaining_arg.strip('()[]{}').lower()
-                if cleaned_remaining in ['daily', 'day', 'd']:
-                    period = 'day'
-                    break
-                elif cleaned_remaining in ['weekly', 'week', 'w']:
-                    period = 'week'
-                    break
-            break
-        except ValueError:
-            # Check if this arg is a period keyword
-            if cleaned_arg in ['daily', 'day', 'd']:
-                period = 'day'
-            elif cleaned_arg in ['weekly', 'week', 'w']:
-                period = 'week'
-            continue
-    
-    if target is None:
+    # Parse target (should be second arg)
+    try:
+        target = int(context.args[1])
+    except (ValueError, IndexError):
         await update.message.reply_text(
-            "❌ Couldn't find a valid number!\n\n"
+            "❌ Second argument must be a number!\n\n"
             "Usage: `/setgoal <activity> <minutes> [period]`\n"
             "Example: `/setgoal pray 45 daily`"
         )
         return
+    
+    # Parse period (optional third arg)
+    if len(context.args) >= 3:
+        period_arg = context.args[2].lower().strip('()[]{}')
+        if period_arg in ['daily', 'day', 'd']:
+            period = 'day'
+        elif period_arg in ['weekly', 'week', 'w']:
+            period = 'week'
     
     if db.set_goal(activity, target, period):
         h, m = target // 60, target % 60
@@ -650,7 +633,7 @@ async def set_goal(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"✅ Goal set!\n{activity.title()}: {time}/{period_text} 💪"
         )
     else:
-        await update.message.reply_text("Failed to set goal!")
+        await update.message.reply_text("❌ Failed to set goal! Check your sheet permissions.")
 
 
 async def streak_info(update: Update, context: ContextTypes.DEFAULT_TYPE):
