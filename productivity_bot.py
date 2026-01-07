@@ -9,6 +9,8 @@ import re
 from datetime import datetime, timedelta
 from typing import Optional, List, Tuple, Dict
 import logging
+import json
+from dotenv import load_dotenv
 
 from telegram import Update
 from telegram.ext import (
@@ -245,7 +247,21 @@ def get_sheets_client():
         'https://spreadsheets.google.com/feeds',
         'https://www.googleapis.com/auth/drive'
     ]
-    creds_dict = eval(os.getenv('GOOGLE_CREDENTIALS'))
+    # Support multiple env names and a .env file for local development
+    load_dotenv()
+    raw = os.getenv('GOOGLE_CREDENTIALS') or os.getenv('google_creds') or os.getenv('GOOGLE_CREDS')
+    if not raw:
+        raise RuntimeError("GOOGLE_CREDENTIALS not set. On Railway add a project variable named 'GOOGLE_CREDENTIALS' containing the service account JSON.")
+
+    # The value should be valid JSON. Try json.loads first, fallback to eval for legacy formats.
+    try:
+        creds_dict = json.loads(raw)
+    except Exception:
+        try:
+            creds_dict = eval(raw)
+        except Exception as e:
+            raise RuntimeError(f"Failed to parse GOOGLE_CREDENTIALS: {e}")
+
     creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, scope)
     return gspread.authorize(creds)
 
@@ -363,12 +379,20 @@ async def connect_sheet(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 def get_service_account_email() -> str:
-    """Get service account email from credentials"""
-    try:
-        creds_dict = eval(os.getenv('GOOGLE_CREDENTIALS'))
-        return creds_dict.get('client_email', 'ERROR: Email not found')
-    except:
+    """Extract service account email from GOOGLE_CREDENTIALS"""
+    raw = os.getenv('GOOGLE_CREDENTIALS') or os.getenv('google_creds') or os.getenv('GOOGLE_CREDS')
+    if not raw:
         return 'ERROR: Configure GOOGLE_CREDENTIALS'
+    
+    try:
+        creds_dict = json.loads(raw)
+    except Exception:
+        try:
+            creds_dict = eval(raw)
+        except Exception:
+            return 'ERROR: Invalid GOOGLE_CREDENTIALS'
+    
+    return creds_dict.get('client_email', 'ERROR: Email not found')
 
 
 async def sheet_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
