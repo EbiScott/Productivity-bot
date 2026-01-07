@@ -1,1 +1,4 @@
 .env
+credentials.json
+*.json
+user_connections.json

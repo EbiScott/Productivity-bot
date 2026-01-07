@@ -1,5 +1,12 @@
+"""
+Telegram Productivity Bot - Simple Multi-User Version
+Users share their own Google Sheet link, and the bot writes to it!
+Super simple - no complex OAuth needed!
+"""
+
 import os
 import re
+import json
 from datetime import datetime, timedelta
 from typing import Optional, List, Tuple, Dict
 import logging
@@ -23,9 +30,51 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+# File to persist user connections
+USER_CONNECTIONS_FILE = 'user_connections.json'
+
 # Store user sheet URLs and connections
 user_sheets: Dict[int, gspread.Spreadsheet] = {}
 user_sheet_urls: Dict[int, str] = {}
+
+
+def load_user_connections():
+    """Load user connections from JSON file"""
+    global user_sheet_urls
+    
+    if os.path.exists(USER_CONNECTIONS_FILE):
+        try:
+            with open(USER_CONNECTIONS_FILE, 'r') as f:
+                data = json.load(f)
+                # Convert string keys back to integers
+                user_sheet_urls = {int(k): v for k, v in data.items()}
+                logger.info(f"Loaded {len(user_sheet_urls)} user connections from file")
+                
+                # Reconnect to all sheets
+                client = get_sheets_client()
+                for user_id, sheet_url in user_sheet_urls.items():
+                    try:
+                        user_sheets[user_id] = SimpleMultiUserDB(sheet_url, client)
+                        logger.info(f"Reconnected sheet for user {user_id}")
+                    except Exception as e:
+                        logger.error(f"Failed to reconnect sheet for user {user_id}: {e}")
+                        
+        except Exception as e:
+            logger.error(f"Error loading user connections: {e}")
+    else:
+        logger.info("No existing user connections file found")
+
+
+def save_user_connections():
+    """Save user connections to JSON file"""
+    try:
+        # Convert integer keys to strings for JSON
+        data = {str(k): v for k, v in user_sheet_urls.items()}
+        with open(USER_CONNECTIONS_FILE, 'w') as f:
+            json.dump(data, f, indent=2)
+        logger.info(f"Saved {len(user_sheet_urls)} user connections to file")
+    except Exception as e:
+        logger.error(f"Error saving user connections: {e}")
 
 
 class SimpleMultiUserDB:
@@ -239,7 +288,16 @@ def get_sheets_client():
         'https://spreadsheets.google.com/feeds',
         'https://www.googleapis.com/auth/drive'
     ]
-    creds_dict = eval(os.getenv('GOOGLE_CREDENTIALS'))
+    raw = os.getenv('GOOGLE_CREDENTIALS')
+    if not raw:
+        raise RuntimeError("GOOGLE_CREDENTIALS not set")
+    
+    # Try JSON first, fallback to eval
+    try:
+        creds_dict = json.loads(raw)
+    except:
+        creds_dict = eval(raw)
+    
     creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, scope)
     return gspread.authorize(creds)
 
@@ -335,6 +393,9 @@ async def connect_sheet(update: Update, context: ContextTypes.DEFAULT_TYPE):
         user_sheets[user_id] = db
         user_sheet_urls[user_id] = sheet_url
         
+        # Save to file for persistence
+        save_user_connections()
+        
         await update.message.reply_text(
             "✅ **Connected successfully!**\n\n"
             "Your productivity tracker is ready!\n\n"
@@ -358,9 +419,19 @@ async def connect_sheet(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 def get_service_account_email() -> str:
     """Get service account email from credentials"""
+    raw = os.getenv('GOOGLE_CREDENTIALS')
+    if not raw:
+        return 'ERROR: Configure GOOGLE_CREDENTIALS'
+    
     try:
-        creds_dict = eval(os.getenv('GOOGLE_CREDENTIALS'))
-        return creds_dict.get('client_email', 'ERROR: Email not found')
+        creds_dict = json.loads(raw)
+    except:
+        try:
+            creds_dict = eval(raw)
+        except:
+            return 'ERROR: Invalid GOOGLE_CREDENTIALS'
+    
+    return creds_dict.get('client_email', 'ERROR: Email not found')
     except:
         return 'ERROR: Configure GOOGLE_CREDENTIALS'
 
@@ -592,6 +663,29 @@ async def streak_info(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(msg)
 
 
+async def disconnect_sheet(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Disconnect user's Google Sheet"""
+    user_id = update.effective_user.id
+    
+    if user_id not in user_sheets:
+        await update.message.reply_text("⚠️ No sheet connected!")
+        return
+    
+    # Remove from memory
+    del user_sheets[user_id]
+    del user_sheet_urls[user_id]
+    
+    # Save updated connections
+    save_user_connections()
+    
+    await update.message.reply_text(
+        "✅ **Disconnected successfully!**\n\n"
+        "Your data is still safe in your Google Sheet.\n\n"
+        "To reconnect later, use:\n"
+        "`/connect <sheet-url>`"
+    )
+
+
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle activity logging"""
     user_id = update.effective_user.id
@@ -636,10 +730,15 @@ def main():
         print("Error: TELEGRAM_BOT_TOKEN not set!")
         return
     
+    # Load existing user connections
+    print("Loading user connections...")
+    load_user_connections()
+    
     application = Application.builder().token(TOKEN).build()
     
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("connect", connect_sheet))
+    application.add_handler(CommandHandler("disconnect", disconnect_sheet))
     application.add_handler(CommandHandler("help", help_command))
     application.add_handler(CommandHandler("sheet", sheet_link))
     application.add_handler(CommandHandler("today", today_summary))
