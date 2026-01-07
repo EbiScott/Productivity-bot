@@ -1,16 +1,8 @@
-"""
-Telegram Productivity Bot - Simple Multi-User Version
-Users share their own Google Sheet link, and the bot writes to it!
-Super simple - no complex OAuth needed!
-"""
-
 import os
 import re
 from datetime import datetime, timedelta
 from typing import Optional, List, Tuple, Dict
 import logging
-import json
-from dotenv import load_dotenv
 
 from telegram import Update
 from telegram.ext import (
@@ -247,21 +239,7 @@ def get_sheets_client():
         'https://spreadsheets.google.com/feeds',
         'https://www.googleapis.com/auth/drive'
     ]
-    # Support multiple env names and a .env file for local development
-    load_dotenv()
-    raw = os.getenv('GOOGLE_CREDENTIALS') or os.getenv('google_creds') or os.getenv('GOOGLE_CREDS')
-    if not raw:
-        raise RuntimeError("GOOGLE_CREDENTIALS not set. On Railway add a project variable named 'GOOGLE_CREDENTIALS' containing the service account JSON.")
-
-    # The value should be valid JSON. Try json.loads first, fallback to eval for legacy formats.
-    try:
-        creds_dict = json.loads(raw)
-    except Exception:
-        try:
-            creds_dict = eval(raw)
-        except Exception as e:
-            raise RuntimeError(f"Failed to parse GOOGLE_CREDENTIALS: {e}")
-
+    creds_dict = eval(os.getenv('GOOGLE_CREDENTIALS'))
     creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, scope)
     return gspread.authorize(creds)
 
@@ -379,20 +357,12 @@ async def connect_sheet(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 def get_service_account_email() -> str:
-    """Extract service account email from GOOGLE_CREDENTIALS"""
-    raw = os.getenv('GOOGLE_CREDENTIALS') or os.getenv('google_creds') or os.getenv('GOOGLE_CREDS')
-    if not raw:
-        return 'ERROR: Configure GOOGLE_CREDENTIALS'
-    
+    """Get service account email from credentials"""
     try:
-        creds_dict = json.loads(raw)
-    except Exception:
-        try:
-            creds_dict = eval(raw)
-        except Exception:
-            return 'ERROR: Invalid GOOGLE_CREDENTIALS'
-    
-    return creds_dict.get('client_email', 'ERROR: Email not found')
+        creds_dict = eval(os.getenv('GOOGLE_CREDENTIALS'))
+        return creds_dict.get('client_email', 'ERROR: Email not found')
+    except:
+        return 'ERROR: Configure GOOGLE_CREDENTIALS'
 
 
 async def sheet_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -430,7 +400,10 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/today - Today's activities\n"
         "/week - Week summary\n"
         "/goals - Goal progress\n"
-        "/setgoal <activity> <min> - Set goal\n"
+        "/setgoal <activity> <min> [period] - Set goal\n"
+        "  Examples:\n"
+        "  • `/setgoal exercise 150` (weekly)\n"
+        "  • `/setgoal meditation 15 daily`\n"
         "/streak - View streaks\n"
         "/sheet - Get sheet link\n\n"
         "✅ All data in YOUR Google Sheet!"
@@ -468,6 +441,16 @@ async def today_summary(update: Update, context: ContextTypes.DEFAULT_TYPE):
     h, m = total // 60, total % 60
     msg += f"\n**Total: {h}h {m}m" if h > 0 else f"\n**Total: {m}m"
     msg += "**"
+    
+    # Check for daily and weekly goals
+    goals = db.get_active_goals()
+    if goals:
+        msg += "\n\n🎯 **Goal Progress:**\n"
+        for activity_name, target, current, period in goals:
+            if activity_name in activity_totals:
+                percentage = (current / target * 100) if target > 0 else 0
+                period_text = "day" if period == 'day' else "week"
+                msg += f"• {activity_name.title()}: {current}/{target}m ({percentage:.0f}%) - {period_text}ly\n"
     
     await update.message.reply_text(msg)
 
@@ -512,7 +495,10 @@ async def goals_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     if not goals:
         await update.message.reply_text(
-            "No goals set!\n\nUse: `/setgoal exercise 150`"
+            "No goals set!\n\n"
+            "Examples:\n"
+            "• `/setgoal exercise 150` (weekly)\n"
+            "• `/setgoal meditation 15 daily`"
         )
         return
     
@@ -521,7 +507,8 @@ async def goals_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
     for activity_name, target, current, period in goals:
         pct = (current / target * 100) if target > 0 else 0
         bar = "█" * int(pct / 10) + "░" * (10 - int(pct / 10))
-        msg += f"**{activity_name.title()}**\n{bar} {pct:.0f}%\n{current}/{target}m\n\n"
+        period_text = "day" if period == 'day' else "week"
+        msg += f"**{activity_name.title()}** ({period_text}ly)\n{bar} {pct:.0f}%\n{current}/{target}m\n\n"
     
     await update.message.reply_text(msg)
 
@@ -537,8 +524,11 @@ async def set_goal(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     if not context.args or len(context.args) < 2:
         await update.message.reply_text(
-            "Usage: `/setgoal <activity> <minutes>`\n\n"
-            "Example: `/setgoal exercise 150`"
+            "Usage: `/setgoal <activity> <minutes> [period]`\n\n"
+            "Examples:\n"
+            "• `/setgoal exercise 150` - 150 min/week (default)\n"
+            "• `/setgoal exercise 30 daily` - 30 min/day\n"
+            "• `/setgoal reading 300 weekly` - 300 min/week"
         )
         return
     
@@ -549,11 +539,27 @@ async def set_goal(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("Invalid number!")
         return
     
-    if db.set_goal(activity, target):
+    # Check for period argument (default to weekly)
+    period = 'week'
+    if len(context.args) >= 3:
+        period_arg = context.args[2].lower()
+        if period_arg in ['daily', 'day', 'd']:
+            period = 'day'
+        elif period_arg in ['weekly', 'week', 'w']:
+            period = 'week'
+        else:
+            await update.message.reply_text(
+                "Invalid period! Use 'daily' or 'weekly'\n\n"
+                "Example: `/setgoal exercise 30 daily`"
+            )
+            return
+    
+    if db.set_goal(activity, target, period):
         h, m = target // 60, target % 60
         time = f"{h}h {m}m" if h > 0 else f"{m}m"
+        period_text = "day" if period == 'day' else "week"
         await update.message.reply_text(
-            f"✅ Goal set!\n{activity.title()}: {time}/week 💪"
+            f"✅ Goal set!\n{activity.title()}: {time}/{period_text} 💪"
         )
     else:
         await update.message.reply_text("Failed to set goal!")
