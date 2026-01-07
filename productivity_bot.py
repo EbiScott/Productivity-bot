@@ -432,8 +432,6 @@ def get_service_account_email() -> str:
             return 'ERROR: Invalid GOOGLE_CREDENTIALS'
     
     return creds_dict.get('client_email', 'ERROR: Email not found')
-    except:
-        return 'ERROR: Configure GOOGLE_CREDENTIALS'
 
 
 async def sheet_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
