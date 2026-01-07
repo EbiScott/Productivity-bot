@@ -21,6 +21,7 @@ A frictionless productivity tracker that lives in Telegram. Log activities, trac
    - Choose a name for your bot (e.g., "My Productivity Tracker")
    - Choose a username (must end in 'bot', e.g., "myproductivity_bot")
 4. BotFather will give you a **token** - save this! It looks like:
+
    ```
    123456789:ABCdefGHIjklMNOpqrsTUVwxyz
    ```
@@ -32,6 +33,7 @@ pip install -r requirements.txt
 ```
 
 Or install directly:
+
 ```bash
 pip install python-telegram-bot==21.0
 ```
@@ -39,16 +41,20 @@ pip install python-telegram-bot==21.0
 ### Step 3: Set Your Bot Token
 
 **Option A: Environment Variable (Recommended)**
+
 ```bash
 export TELEGRAM_BOT_TOKEN='your-token-here'
 ```
 
 **Option B: Edit the Script**
 Open `productivity_bot.py` and replace this line:
+
 ```python
 TOKEN = os.getenv('TELEGRAM_BOT_TOKEN')
 ```
+
 with:
+
 ```python
 TOKEN = 'your-token-here'
 ```
@@ -61,7 +67,7 @@ python productivity_bot.py
 
 You should see: `Bot is starting...`
 
-### Step 5: Start Using It!
+### Step 5: Start Using It
 
 1. Open Telegram and search for your bot by its username
 2. Send `/start` to begin
@@ -72,17 +78,20 @@ You should see: `Bot is starting...`
 ### Logging Activities
 
 Just send a message in this format:
+
 ```
 <activity> <duration> [optional notes]
 ```
 
 Examples:
+
 - `exercise 30m`
 - `reading 1h`
 - `meditation 15m felt really focused`
 - `coding 2h working on bot project`
 
 Supported time formats:
+
 - `30m` or `30 minutes` for minutes
 - `1h` or `1 hour` for hours
 
@@ -101,14 +110,17 @@ Supported time formats:
 ### Setting Goals
 
 Set weekly goals to stay motivated:
+
 ```
 /setgoal exercise 150
 ```
+
 This sets a goal of 150 minutes of exercise per week.
 
 ### Quick Buttons
 
 Create buttons for activities you log frequently:
+
 ```
 /addbutton exercise 30
 /addbutton reading 45
@@ -119,6 +131,7 @@ Then use `/quick` to get one-tap logging!
 ## Examples 💡
 
 ### Daily Routine
+
 ```
 Morning:
 meditation 10m started my day right
@@ -132,6 +145,7 @@ Evening:
 ```
 
 ### Setting Up Your Workflow
+
 ```
 /setgoal exercise 150
 /setgoal reading 300
@@ -141,6 +155,7 @@ Evening:
 ```
 
 ### Checking Progress
+
 ```
 /goals    - See how you're tracking toward weekly goals
 /streak   - Check your consecutive days
@@ -150,11 +165,13 @@ Evening:
 ## Deployment Options 🌐
 
 ### Run Locally
+
 Keep it running on your computer. Simple but requires your computer to be on.
 
 ### Deploy to a Server
 
 **Option 1: Railway.app (Free tier available)**
+
 1. Create account at railway.app
 2. Create new project
 3. Add PostgreSQL database (optional upgrade later)
@@ -162,12 +179,14 @@ Keep it running on your computer. Simple but requires your computer to be on.
 5. Add environment variable: `TELEGRAM_BOT_TOKEN`
 
 **Option 2: Render.com (Free tier available)**
+
 1. Create account at render.com
 2. Create new "Web Service"
 3. Connect your GitHub repo (or upload code)
 4. Add environment variable: `TELEGRAM_BOT_TOKEN`
 
 **Option 3: VPS (DigitalOcean, Linode, etc.)**
+
 ```bash
 # On your server
 git clone your-repo
@@ -178,6 +197,7 @@ nohup python productivity_bot.py &
 ```
 
 ### Using Screen (for VPS)
+
 ```bash
 screen -S productivity-bot
 python productivity_bot.py
@@ -188,12 +208,14 @@ python productivity_bot.py
 ## Data Storage 💾
 
 The bot uses SQLite to store your data in `productivity.db`. This file contains:
+
 - All your logged activities
 - Your goals
 - Your quick buttons
 - Activity streaks
 
 **Backup your data:**
+
 ```bash
 cp productivity.db productivity.db.backup
 ```
@@ -209,19 +231,23 @@ cp productivity.db productivity.db.backup
 ## Troubleshooting 🔧
 
 **Bot doesn't respond:**
+
 - Check that the bot is running (`python productivity_bot.py`)
 - Verify your token is correct
 - Make sure you've sent `/start` to the bot first
 
 **"TELEGRAM_BOT_TOKEN not set" error:**
+
 - Set the environment variable: `export TELEGRAM_BOT_TOKEN='your-token'`
 - Or edit the script to hardcode your token (less secure)
 
 **Database errors:**
+
 - Delete `productivity.db` to start fresh (backs up your data first!)
 - Check file permissions
 
 **Bot stops when I close terminal:**
+
 - Use `nohup python productivity_bot.py &` to run in background
 - Or deploy to a cloud service
 
