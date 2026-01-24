@@ -233,16 +233,51 @@ class SimpleMultiUserDB:
     
     def set_goal(self, activity_name: str, target_minutes: int, period: str = 'week') -> bool:
         try:
-            all_records = self.goals_sheet.get_all_records()
-            for i, record in enumerate(all_records, start=2):
-                if record['Activity Name'] == activity_name and record['Period'] == period:
-                    self.goals_sheet.update_cell(i, 4, 'FALSE')
+            # First verify the sheet exists and has correct headers
+            try:
+                # Get headers
+                headers = self.goals_sheet.row_values(1)
+                expected_headers = ['Activity Name', 'Target (min)', 'Period', 'Active']
+                
+                # Check if headers match
+                if headers != expected_headers:
+                    logger.error(f"Goals sheet headers don't match! Found: {headers}, Expected: {expected_headers}")
+                    # Try to fix headers
+                    if len(headers) < 4 or not headers:
+                        logger.info("Recreating Goals sheet headers...")
+                        self.goals_sheet.clear()
+                        self.goals_sheet.append_row(expected_headers)
+                        self.goals_sheet.format('A1:D1', {"textFormat": {"bold": True}})
+                        headers = expected_headers
+                        
+            except Exception as e:
+                logger.error(f"Error checking headers: {e}")
+                return False
             
-            self.goals_sheet.append_row([activity_name, target_minutes, period, 'TRUE'])
-            logger.info(f"Goal set successfully: {activity_name} {target_minutes}m {period}")
+            # Get all existing goals
+            all_records = self.goals_sheet.get_all_records()
+            logger.info(f"Found {len(all_records)} existing goals in sheet")
+            
+            # Deactivate old goals for this activity/period combination
+            for i, record in enumerate(all_records, start=2):
+                try:
+                    if record.get('Activity Name') == activity_name and record.get('Period') == period:
+                        logger.info(f"Deactivating old goal at row {i}")
+                        self.goals_sheet.update_cell(i, 4, 'FALSE')
+                except Exception as e:
+                    logger.error(f"Error processing record at row {i}: {e}")
+            
+            # Add new goal
+            new_row = [activity_name, target_minutes, period, 'TRUE']
+            logger.info(f"Adding new goal row: {new_row}")
+            self.goals_sheet.append_row(new_row)
+            
+            logger.info(f"✅ Goal set successfully: {activity_name} {target_minutes}m {period}")
             return True
+            
         except Exception as e:
-            logger.error(f"Error setting goal for {activity_name}: {e}")
+            logger.error(f"❌ Error setting goal: {str(e)}")
+            logger.error(f"Activity: {activity_name}, Target: {target_minutes}, Period: {period}")
             import traceback
             logger.error(traceback.format_exc())
             return False
@@ -712,12 +747,47 @@ async def disconnect_sheet(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Save updated connections
     save_user_connections()
     
+    logger.info(f"User {user_id} disconnected")
+    
     await update.message.reply_text(
         "✅ **Disconnected successfully!**\n\n"
         "Your data is still safe in your Google Sheet.\n\n"
         "To reconnect later, use:\n"
         "`/connect <sheet-url>`"
     )
+
+
+async def debug_sheet(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Debug command to check sheet structure"""
+    user_id = update.effective_user.id
+    db = get_user_db(user_id)
+    
+    if not db:
+        await update.message.reply_text("⚠️ No sheet connected! Send /start")
+        return
+    
+    try:
+        # Check Goals sheet
+        headers = db.goals_sheet.row_values(1)
+        all_data = db.goals_sheet.get_all_values()
+        
+        msg = f"🔍 **Goals Sheet Debug Info:**\n\n"
+        msg += f"**Headers:** {headers}\n\n"
+        msg += f"**Total rows:** {len(all_data)}\n\n"
+        
+        if len(all_data) > 1:
+            msg += "**First few rows:**\n"
+            for i, row in enumerate(all_data[1:6], start=2):  # Show rows 2-6
+                msg += f"Row {i}: {row}\n"
+        else:
+            msg += "No data rows (only headers)\n"
+        
+        msg += f"\n**Sheet URL:** {db.spreadsheet.url}"
+        
+        await update.message.reply_text(msg)
+        
+    except Exception as e:
+        await update.message.reply_text(f"❌ Error reading sheet: {str(e)}")
 
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -773,6 +843,7 @@ def main():
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("connect", connect_sheet))
     application.add_handler(CommandHandler("disconnect", disconnect_sheet))
+    application.add_handler(CommandHandler("debug", debug_sheet))
     application.add_handler(CommandHandler("help", help_command))
     application.add_handler(CommandHandler("sheet", sheet_link))
     application.add_handler(CommandHandler("today", today_summary))
