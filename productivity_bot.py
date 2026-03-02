@@ -1,27 +1,33 @@
 """
-Telegram Productivity Bot - Simple Multi-User Version
-Users share their own Google Sheet link, and the bot writes to it!
-Super simple - no complex OAuth needed!
+Ultimate Productivity Bot - Complete Version
+Simple, button-based habit tracking with automatic weekly PDF reports
 """
 
 import os
+import sqlite3
 import re
-import json
-from datetime import datetime, timedelta
+import pickle
+from datetime import datetime, timedelta, time
 from typing import Optional, List, Tuple, Dict
 import logging
+from pathlib import Path
 
-from telegram import Update
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     Application,
     CommandHandler,
     MessageHandler,
+    CallbackQueryHandler,
     ContextTypes,
     filters,
 )
 
-import gspread
-from oauth2client.service_account import ServiceAccountCredentials
+# For PDF generation
+import matplotlib
+matplotlib.use('Agg')  # Non-interactive backend
+import matplotlib.pyplot as plt
+from matplotlib.backends.backend_pdf import PdfPages
+import io
 
 # Enable logging
 logging.basicConfig(
@@ -30,330 +36,304 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# File to persist user connections - use absolute path
-USER_CONNECTIONS_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'user_connections.json')
-
-# Store user sheet URLs and connections
-user_sheets: Dict[int, gspread.Spreadsheet] = {}
-user_sheet_urls: Dict[int, str] = {}
+# Storage
+DB_FILE = 'productivity.db'
+STORAGE_FILE = 'user_data.pkl'
 
 
-def load_user_connections():
-    """Load user connections from JSON file"""
-    global user_sheet_urls
+class ProductivityDB:
+    """Database handler for productivity tracking"""
     
-    logger.info(f"Attempting to load connections from: {USER_CONNECTIONS_FILE}")
+    def __init__(self, db_path=DB_FILE):
+        self.db_path = db_path
+        self.init_db()
     
-    if os.path.exists(USER_CONNECTIONS_FILE):
-        try:
-            with open(USER_CONNECTIONS_FILE, 'r') as f:
-                data = json.load(f)
-                # Convert string keys back to integers
-                user_sheet_urls = {int(k): v for k, v in data.items()}
-                logger.info(f"✅ Loaded {len(user_sheet_urls)} user connections from file")
-                
-                # Reconnect to all sheets
-                try:
-                    client = get_sheets_client()
-                    for user_id, sheet_url in user_sheet_urls.items():
-                        try:
-                            user_sheets[user_id] = SimpleMultiUserDB(sheet_url, client)
-                            logger.info(f"✅ Reconnected sheet for user {user_id}")
-                        except Exception as e:
-                            logger.error(f"❌ Failed to reconnect sheet for user {user_id}: {e}")
-                except Exception as e:
-                    logger.error(f"❌ Failed to get sheets client: {e}")
-                    
-        except Exception as e:
-            logger.error(f"❌ Error loading user connections: {e}")
-    else:
-        logger.info(f"ℹ️ No existing user connections file found at {USER_CONNECTIONS_FILE}")
-
-
-def save_user_connections():
-    """Save user connections to JSON file"""
-    try:
-        # Convert integer keys to strings for JSON
-        data = {str(k): v for k, v in user_sheet_urls.items()}
+    def init_db(self):
+        """Initialize database tables"""
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
         
-        # Ensure directory exists
-        os.makedirs(os.path.dirname(USER_CONNECTIONS_FILE) or '.', exist_ok=True)
-        
-        with open(USER_CONNECTIONS_FILE, 'w') as f:
-            json.dump(data, f, indent=2)
-        logger.info(f"✅ Saved {len(user_sheet_urls)} user connections to {USER_CONNECTIONS_FILE}")
-    except Exception as e:
-        logger.error(f"❌ Error saving user connections: {e}")
-
-
-class SimpleMultiUserDB:
-    """Simple Google Sheets handler - each user has their own sheet"""
-    
-    def __init__(self, spreadsheet_url: str, client: gspread.Client):
-        """Initialize connection to user's spreadsheet"""
-        self.spreadsheet = client.open_by_url(spreadsheet_url)
-        self._init_sheets()
-    
-    def _init_sheets(self):
-        """Initialize required sheets with headers"""
-        # Activities sheet
-        try:
-            self.activities_sheet = self.spreadsheet.worksheet('Activities')
-        except:
-            self.activities_sheet = self.spreadsheet.add_worksheet(
-                title='Activities', 
-                rows=1000, 
-                cols=5
+        # Activities table
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS activities (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL,
+                activity_name TEXT NOT NULL,
+                duration_minutes INTEGER NOT NULL,
+                timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
+                date TEXT NOT NULL,
+                notes TEXT
             )
-            self.activities_sheet.append_row([
-                'Activity Name', 'Duration (min)', 'Timestamp', 'Notes', 'Date'
-            ])
-            # Format header
-            self.activities_sheet.format('A1:E1', {"textFormat": {"bold": True}})
+        ''')
         
-        # Goals sheet
-        try:
-            self.goals_sheet = self.spreadsheet.worksheet('Goals')
-        except:
-            self.goals_sheet = self.spreadsheet.add_worksheet(
-                title='Goals',
-                rows=100,
-                cols=4
+        # Goals table
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS goals (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL,
+                activity_name TEXT NOT NULL,
+                target_minutes INTEGER NOT NULL,
+                period TEXT NOT NULL,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                active INTEGER DEFAULT 1
             )
-            self.goals_sheet.append_row([
-                'Activity Name', 'Target (min)', 'Period', 'Active'
-            ])
-            self.goals_sheet.format('A1:D1', {"textFormat": {"bold": True}})
+        ''')
         
-        # Quick Buttons sheet
-        try:
-            self.buttons_sheet = self.spreadsheet.worksheet('Quick Buttons')
-        except:
-            self.buttons_sheet = self.spreadsheet.add_worksheet(
-                title='Quick Buttons',
-                rows=100,
-                cols=2
+        # Quick buttons table
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS quick_buttons (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL,
+                activity_name TEXT NOT NULL,
+                duration_minutes INTEGER NOT NULL,
+                emoji TEXT DEFAULT '⭐',
+                UNIQUE(user_id, activity_name, duration_minutes)
             )
-            self.buttons_sheet.append_row([
-                'Activity Name', 'Duration (min)'
-            ])
-            self.buttons_sheet.format('A1:B1', {"textFormat": {"bold": True}})
+        ''')
+        
+        conn.commit()
+        conn.close()
     
-    # ... (rest of the methods are the same as before)
-    
-    def log_activity(self, activity_name: str, duration_minutes: int, notes: str = None) -> bool:
+    def log_activity(self, user_id: int, activity_name: str, 
+                     duration_minutes: int, notes: str = None) -> bool:
+        """Log a new activity"""
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
         try:
-            timestamp = datetime.now()
-            self.activities_sheet.append_row([
-                activity_name,
-                duration_minutes,
-                timestamp.strftime('%Y-%m-%d %H:%M:%S'),
-                notes or '',
-                timestamp.strftime('%Y-%m-%d')
-            ])
+            now = datetime.now()
+            cursor.execute('''
+                INSERT INTO activities (user_id, activity_name, duration_minutes, date, notes)
+                VALUES (?, ?, ?, ?, ?)
+            ''', (user_id, activity_name, duration_minutes, now.strftime('%Y-%m-%d'), notes))
+            conn.commit()
             return True
         except Exception as e:
             logger.error(f"Error logging activity: {e}")
             return False
+        finally:
+            conn.close()
     
-    def get_today_activities(self) -> List[Tuple]:
-        try:
-            all_records = self.activities_sheet.get_all_records()
-            today = datetime.now().date().strftime('%Y-%m-%d')
-            
-            results = []
-            for record in all_records:
-                if record.get('Date') == today:
-                    results.append((
-                        record['Activity Name'],
-                        record['Duration (min)'],
-                        record['Timestamp'],
-                        record.get('Notes', '')
-                    ))
-            return results
-        except Exception as e:
-            logger.error(f"Error: {e}")
-            return []
+    def get_today_activities(self, user_id: int) -> List[Tuple]:
+        """Get all activities for today"""
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        today = datetime.now().date().strftime('%Y-%m-%d')
+        cursor.execute('''
+            SELECT activity_name, duration_minutes, timestamp, notes
+            FROM activities
+            WHERE user_id = ? AND date = ?
+            ORDER BY timestamp DESC
+        ''', (user_id, today))
+        results = cursor.fetchall()
+        conn.close()
+        return results
     
-    def get_week_summary(self) -> List[Tuple]:
-        try:
-            all_records = self.activities_sheet.get_all_records()
-            week_ago = (datetime.now() - timedelta(days=7)).date().strftime('%Y-%m-%d')
-            
-            activity_totals = {}
-            activity_counts = {}
-            
-            for record in all_records:
-                if record.get('Date', '') >= week_ago:
-                    activity_name = record['Activity Name']
-                    duration = record['Duration (min)']
-                    
-                    if activity_name not in activity_totals:
-                        activity_totals[activity_name] = 0
-                        activity_counts[activity_name] = 0
-                    
-                    activity_totals[activity_name] += duration
-                    activity_counts[activity_name] += 1
-            
-            return [(name, activity_totals[name], activity_counts[name]) 
-                    for name in sorted(activity_totals.keys())]
-        except Exception as e:
-            logger.error(f"Error: {e}")
-            return []
+    def get_week_summary(self, user_id: int) -> List[Tuple]:
+        """Get activity summary for the past week"""
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        week_ago = (datetime.now() - timedelta(days=7)).date().strftime('%Y-%m-%d')
+        cursor.execute('''
+            SELECT activity_name, SUM(duration_minutes) as total_minutes, COUNT(*) as count
+            FROM activities
+            WHERE user_id = ? AND date >= ?
+            GROUP BY activity_name
+            ORDER BY total_minutes DESC
+        ''', (user_id, week_ago))
+        results = cursor.fetchall()
+        conn.close()
+        return results
     
-    def get_streak(self, activity_name: str) -> int:
-        try:
-            all_records = self.activities_sheet.get_all_records()
-            dates = set(record['Date'] for record in all_records 
-                       if record['Activity Name'] == activity_name and record.get('Date'))
-            
-            if not dates:
-                return 0
-            
-            sorted_dates = sorted(dates, reverse=True)
-            today = datetime.now().date().strftime('%Y-%m-%d')
-            
-            if sorted_dates[0] < (datetime.now().date() - timedelta(days=1)).strftime('%Y-%m-%d'):
-                return 0
-            
-            streak = 1
-            current_date = datetime.strptime(sorted_dates[0], '%Y-%m-%d').date()
-            
-            for i in range(1, len(sorted_dates)):
-                date = datetime.strptime(sorted_dates[i], '%Y-%m-%d').date()
-                if current_date - date == timedelta(days=1):
-                    streak += 1
-                    current_date = date
-                else:
-                    break
-            
-            return streak
-        except:
+    def get_streak(self, user_id: int, activity_name: str) -> int:
+        """Calculate consecutive days streak for an activity"""
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        
+        cursor.execute('''
+            SELECT DISTINCT date
+            FROM activities
+            WHERE user_id = ? AND activity_name = ?
+            ORDER BY date DESC
+        ''', (user_id, activity_name))
+        
+        dates = [row[0] for row in cursor.fetchall()]
+        conn.close()
+        
+        if not dates:
             return 0
+        
+        streak = 1
+        current_date = datetime.strptime(dates[0], '%Y-%m-%d').date()
+        today = datetime.now().date()
+        
+        # Must be today or yesterday
+        if current_date < today - timedelta(days=1):
+            return 0
+        
+        for i in range(1, len(dates)):
+            date = datetime.strptime(dates[i], '%Y-%m-%d').date()
+            if current_date - date == timedelta(days=1):
+                streak += 1
+                current_date = date
+            else:
+                break
+        
+        return streak
     
-    def set_goal(self, activity_name: str, target_minutes: int, period: str = 'week') -> bool:
+    def set_goal(self, user_id: int, activity_name: str, 
+                 target_minutes: int, period: str = 'week') -> bool:
+        """Set a goal for an activity"""
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
         try:
-            # First verify the sheet exists and has correct headers
-            try:
-                # Get headers
-                headers = self.goals_sheet.row_values(1)
-                expected_headers = ['Activity Name', 'Target (min)', 'Period', 'Active']
-                
-                # Check if headers match
-                if headers != expected_headers:
-                    logger.error(f"Goals sheet headers don't match! Found: {headers}, Expected: {expected_headers}")
-                    # Try to fix headers
-                    if len(headers) < 4 or not headers:
-                        logger.info("Recreating Goals sheet headers...")
-                        self.goals_sheet.clear()
-                        self.goals_sheet.append_row(expected_headers)
-                        self.goals_sheet.format('A1:D1', {"textFormat": {"bold": True}})
-                        headers = expected_headers
-                        
-            except Exception as e:
-                logger.error(f"Error checking headers: {e}")
-                return False
+            # Deactivate old goals
+            cursor.execute('''
+                UPDATE goals SET active = 0 
+                WHERE user_id = ? AND activity_name = ? AND period = ?
+            ''', (user_id, activity_name, period))
             
-            # Get all existing goals
-            all_records = self.goals_sheet.get_all_records()
-            logger.info(f"Found {len(all_records)} existing goals in sheet")
-            
-            # Deactivate old goals for this activity/period combination
-            for i, record in enumerate(all_records, start=2):
-                try:
-                    if record.get('Activity Name') == activity_name and record.get('Period') == period:
-                        logger.info(f"Deactivating old goal at row {i}")
-                        self.goals_sheet.update_cell(i, 4, 'FALSE')
-                except Exception as e:
-                    logger.error(f"Error processing record at row {i}: {e}")
-            
-            # Add new goal
-            new_row = [activity_name, target_minutes, period, 'TRUE']
-            logger.info(f"Adding new goal row: {new_row}")
-            self.goals_sheet.append_row(new_row)
-            
-            logger.info(f"✅ Goal set successfully: {activity_name} {target_minutes}m {period}")
-            return True
-            
-        except Exception as e:
-            logger.error(f"❌ Error setting goal: {str(e)}")
-            logger.error(f"Activity: {activity_name}, Target: {target_minutes}, Period: {period}")
-            import traceback
-            logger.error(traceback.format_exc())
-            return False
-    
-    def get_active_goals(self) -> List[Tuple]:
-        try:
-            all_goals = self.goals_sheet.get_all_records()
-            all_activities = self.activities_sheet.get_all_records()
-            results = []
-            
-            for goal in all_goals:
-                if goal['Active'] == 'TRUE':
-                    activity_name = goal['Activity Name']
-                    target_minutes = goal['Target (min)']
-                    period = goal['Period']
-                    
-                    start_date = (datetime.now() - timedelta(days=7 if period == 'week' else 0)).date().strftime('%Y-%m-%d')
-                    
-                    current = sum(activity['Duration (min)'] for activity in all_activities
-                                 if activity['Activity Name'] == activity_name and 
-                                 activity.get('Date', '') >= start_date)
-                    
-                    results.append((activity_name, target_minutes, current, period))
-            
-            return results
-        except Exception as e:
-            logger.error(f"Error: {e}")
-            return []
-    
-    def add_quick_button(self, activity_name: str, duration_minutes: int) -> bool:
-        try:
-            all_buttons = self.buttons_sheet.get_all_records()
-            for button in all_buttons:
-                if (button['Activity Name'] == activity_name and 
-                    button['Duration (min)'] == duration_minutes):
-                    return False
-            
-            self.buttons_sheet.append_row([activity_name, duration_minutes])
+            # Insert new goal
+            cursor.execute('''
+                INSERT INTO goals (user_id, activity_name, target_minutes, period)
+                VALUES (?, ?, ?, ?)
+            ''', (user_id, activity_name, target_minutes, period))
+            conn.commit()
             return True
         except Exception as e:
-            logger.error(f"Error: {e}")
+            logger.error(f"Error setting goal: {e}")
             return False
+        finally:
+            conn.close()
     
-    def get_quick_buttons(self) -> List[Tuple]:
+    def get_active_goals(self, user_id: int) -> List[Tuple]:
+        """Get all active goals with progress"""
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        
+        cursor.execute('''
+            SELECT activity_name, target_minutes, period
+            FROM goals
+            WHERE user_id = ? AND active = 1
+        ''', (user_id,))
+        
+        goals = cursor.fetchall()
+        results = []
+        
+        for activity_name, target_minutes, period in goals:
+            # Calculate progress
+            if period == 'day':
+                start_date = datetime.now().date().strftime('%Y-%m-%d')
+            else:  # week
+                start_date = (datetime.now() - timedelta(days=7)).date().strftime('%Y-%m-%d')
+            
+            cursor.execute('''
+                SELECT SUM(duration_minutes)
+                FROM activities
+                WHERE user_id = ? AND activity_name = ? AND date >= ?
+            ''', (user_id, activity_name, start_date))
+            
+            current = cursor.fetchone()[0] or 0
+            results.append((activity_name, target_minutes, current, period))
+        
+        conn.close()
+        return results
+    
+    def add_quick_button(self, user_id: int, activity_name: str, 
+                        duration_minutes: int, emoji: str = '⭐') -> bool:
+        """Add a quick button for easy logging"""
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
         try:
-            all_buttons = self.buttons_sheet.get_all_records()
-            return sorted([(b['Activity Name'], b['Duration (min)']) for b in all_buttons])
-        except:
-            return []
-
-
-def get_sheets_client():
-    """Get Google Sheets client using service account"""
-    scope = [
-        'https://spreadsheets.google.com/feeds',
-        'https://www.googleapis.com/auth/drive'
-    ]
-    raw = os.getenv('GOOGLE_CREDENTIALS')
-    if not raw:
-        raise RuntimeError("GOOGLE_CREDENTIALS not set")
+            cursor.execute('''
+                INSERT OR IGNORE INTO quick_buttons (user_id, activity_name, duration_minutes, emoji)
+                VALUES (?, ?, ?, ?)
+            ''', (user_id, activity_name, duration_minutes, emoji))
+            conn.commit()
+            return cursor.rowcount > 0
+        except Exception as e:
+            logger.error(f"Error adding quick button: {e}")
+            return False
+        finally:
+            conn.close()
     
-    # Try JSON first, fallback to eval
-    try:
-        creds_dict = json.loads(raw)
-    except:
-        creds_dict = eval(raw)
+    def remove_quick_button(self, user_id: int, activity_name: str, 
+                           duration_minutes: int) -> bool:
+        """Remove a quick button"""
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        try:
+            cursor.execute('''
+                DELETE FROM quick_buttons 
+                WHERE user_id = ? AND activity_name = ? AND duration_minutes = ?
+            ''', (user_id, activity_name, duration_minutes))
+            conn.commit()
+            return cursor.rowcount > 0
+        except Exception as e:
+            logger.error(f"Error removing quick button: {e}")
+            return False
+        finally:
+            conn.close()
     
-    creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, scope)
-    return gspread.authorize(creds)
+    def get_quick_buttons(self, user_id: int) -> List[Tuple]:
+        """Get all quick buttons for user"""
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        cursor.execute('''
+            SELECT activity_name, duration_minutes, emoji
+            FROM quick_buttons
+            WHERE user_id = ?
+            ORDER BY activity_name, duration_minutes
+        ''', (user_id,))
+        results = cursor.fetchall()
+        conn.close()
+        return results
+    
+    def get_week_data_for_report(self, user_id: int) -> Dict:
+        """Get all data needed for weekly report"""
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        
+        week_ago = (datetime.now() - timedelta(days=7)).date().strftime('%Y-%m-%d')
+        
+        # Get all activities for the week
+        cursor.execute('''
+            SELECT date, activity_name, SUM(duration_minutes) as total
+            FROM activities
+            WHERE user_id = ? AND date >= ?
+            GROUP BY date, activity_name
+            ORDER BY date
+        ''', (user_id, week_ago))
+        
+        activities_by_day = {}
+        for date_str, activity, minutes in cursor.fetchall():
+            if date_str not in activities_by_day:
+                activities_by_day[date_str] = {}
+            activities_by_day[date_str][activity] = minutes
+        
+        # Get totals by activity
+        cursor.execute('''
+            SELECT activity_name, SUM(duration_minutes) as total, COUNT(*) as sessions
+            FROM activities
+            WHERE user_id = ? AND date >= ?
+            GROUP BY activity_name
+            ORDER BY total DESC
+        ''', (user_id, week_ago))
+        
+        totals = {row[0]: {'minutes': row[1], 'sessions': row[2]} 
+                  for row in cursor.fetchall()}
+        
+        conn.close()
+        
+        return {
+            'activities_by_day': activities_by_day,
+            'totals': totals,
+            'week_start': week_ago,
+            'week_end': datetime.now().date().strftime('%Y-%m-%d')
+        }
 
 
-def get_user_db(user_id: int) -> Optional[SimpleMultiUserDB]:
-    """Get database connection for user"""
-    if user_id not in user_sheets:
-        return None
-    return user_sheets[user_id]
+# Initialize database
+db = ProductivityDB()
 
 
 def parse_activity(text: str) -> Optional[Tuple[str, int, str]]:
@@ -375,177 +355,374 @@ def parse_activity(text: str) -> Optional[Tuple[str, int, str]]:
     return activity_name, duration, notes
 
 
+def generate_weekly_pdf(user_id: int, username: str) -> io.BytesIO:
+    """Generate a beautiful weekly report PDF"""
+    data = db.get_week_data_for_report(user_id)
+    goals = db.get_active_goals(user_id)
+    
+    # Create PDF in memory
+    pdf_buffer = io.BytesIO()
+    
+    with PdfPages(pdf_buffer) as pdf:
+        # Page 1: Overview
+        fig, ((ax1, ax2), (ax3, ax4)) = plt.subplots(2, 2, figsize=(11, 8.5))
+        fig.suptitle(f'📊 Weekly Productivity Report - {username}', 
+                     fontsize=16, fontweight='bold')
+        
+        # Chart 1: Total time by activity (bar chart)
+        if data['totals']:
+            activities = list(data['totals'].keys())
+            minutes = [data['totals'][a]['minutes'] for a in activities]
+            hours = [m/60 for m in minutes]
+            
+            ax1.barh(activities, hours, color='#4CAF50')
+            ax1.set_xlabel('Hours')
+            ax1.set_title('Total Time by Activity')
+            ax1.grid(axis='x', alpha=0.3)
+            
+            # Chart 2: Sessions by activity
+            sessions = [data['totals'][a]['sessions'] for a in activities]
+            ax2.barh(activities, sessions, color='#2196F3')
+            ax2.set_xlabel('Sessions')
+            ax2.set_title('Number of Sessions')
+            ax2.grid(axis='x', alpha=0.3)
+            
+            # Chart 3: Daily breakdown (stacked bar)
+            dates = sorted(data['activities_by_day'].keys())
+            if dates:
+                date_labels = [datetime.strptime(d, '%Y-%m-%d').strftime('%a %m/%d') 
+                              for d in dates]
+                
+                bottom = [0] * len(dates)
+                colors = plt.cm.Set3(range(len(activities)))
+                
+                for i, activity in enumerate(activities):
+                    values = [data['activities_by_day'].get(d, {}).get(activity, 0)/60 
+                             for d in dates]
+                    ax3.bar(date_labels, values, bottom=bottom, 
+                           label=activity.title(), color=colors[i])
+                    bottom = [b + v for b, v in zip(bottom, values)]
+                
+                ax3.set_ylabel('Hours')
+                ax3.set_title('Daily Activity Breakdown')
+                ax3.legend(loc='upper left', fontsize=8)
+                ax3.grid(axis='y', alpha=0.3)
+                plt.setp(ax3.xaxis.get_majorticklabels(), rotation=45, ha='right')
+        
+        # Chart 4: Goal progress
+        if goals:
+            goal_names = [f"{g[0].title()}\n({g[3]})" for g in goals]
+            progress_pct = [(g[2]/g[1]*100) if g[1] > 0 else 0 for g in goals]
+            colors_goals = ['#4CAF50' if p >= 100 else '#FFC107' if p >= 75 
+                           else '#FF9800' if p >= 50 else '#F44336' 
+                           for p in progress_pct]
+            
+            ax4.barh(goal_names, progress_pct, color=colors_goals)
+            ax4.set_xlabel('Progress (%)')
+            ax4.set_title('Goal Progress')
+            ax4.axvline(x=100, color='green', linestyle='--', alpha=0.5)
+            ax4.grid(axis='x', alpha=0.3)
+            ax4.set_xlim(0, max(120, max(progress_pct) if progress_pct else 100))
+        else:
+            ax4.text(0.5, 0.5, 'No goals set', 
+                    ha='center', va='center', fontsize=12)
+            ax4.axis('off')
+        
+        plt.tight_layout()
+        pdf.savefig(fig, bbox_inches='tight')
+        plt.close()
+        
+        # Page 2: Detailed statistics
+        fig, ax = plt.subplots(figsize=(8.5, 11))
+        ax.axis('tight')
+        ax.axis('off')
+        
+        # Title
+        fig.text(0.5, 0.95, 'Detailed Statistics', 
+                ha='center', fontsize=14, fontweight='bold')
+        
+        # Summary text
+        report_text = f"Week: {data['week_start']} to {data['week_end']}\n\n"
+        
+        if data['totals']:
+            total_minutes = sum(d['minutes'] for d in data['totals'].values())
+            total_hours = total_minutes / 60
+            report_text += f"📊 TOTAL TIME: {int(total_hours)}h {int(total_minutes % 60)}m\n\n"
+            
+            report_text += "📈 BY ACTIVITY:\n"
+            for activity, stats in sorted(data['totals'].items(), 
+                                        key=lambda x: x[1]['minutes'], 
+                                        reverse=True):
+                h = stats['minutes'] // 60
+                m = stats['minutes'] % 60
+                streak = db.get_streak(user_id, activity)
+                streak_txt = f" 🔥{streak}" if streak > 0 else ""
+                report_text += f"  • {activity.title()}: {h}h {m}m ({stats['sessions']} sessions){streak_txt}\n"
+            
+            report_text += "\n🎯 GOALS:\n"
+            if goals:
+                for activity_name, target, current, period in goals:
+                    pct = (current / target * 100) if target > 0 else 0
+                    status = "✅" if pct >= 100 else "⏳"
+                    h_target = target // 60
+                    m_target = target % 60
+                    h_current = current // 60
+                    m_current = current % 60
+                    period_txt = "per day" if period == 'day' else "per week"
+                    report_text += f"  {status} {activity_name.title()}: {h_current}h {m_current}m / {h_target}h {m_target}m {period_txt} ({pct:.0f}%)\n"
+            else:
+                report_text += "  No goals set\n"
+            
+            report_text += "\n📅 DAILY BREAKDOWN:\n"
+            for date in sorted(data['activities_by_day'].keys()):
+                date_label = datetime.strptime(date, '%Y-%m-%d').strftime('%A, %b %d')
+                daily_total = sum(data['activities_by_day'][date].values())
+                h = daily_total // 60
+                m = daily_total % 60
+                report_text += f"  {date_label}: {h}h {m}m\n"
+                for activity, minutes in sorted(data['activities_by_day'][date].items()):
+                    report_text += f"    - {activity.title()}: {minutes}m\n"
+        else:
+            report_text += "No activities logged this week."
+        
+        fig.text(0.1, 0.85, report_text, fontsize=10, 
+                verticalalignment='top', family='monospace')
+        
+        pdf.savefig(fig, bbox_inches='tight')
+        plt.close()
+    
+    pdf_buffer.seek(0)
+    return pdf_buffer
+
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Send welcome message"""
+    """Send welcome message with quick buttons"""
     user = update.effective_user
     user_id = user.id
     
-    if user_id in user_sheets:
+    # Get user's quick buttons
+    buttons = db.get_quick_buttons(user_id)
+    
+    welcome_msg = f"""👋 Hey {user.first_name}! Welcome to Productivity Bot!
+
+📊 **Track your habits instantly with quick buttons!**
+
+"""
+    
+    if buttons:
+        welcome_msg += "✨ **Your Quick Buttons:**\n(Tap to log instantly!)\n\n"
+        # Show buttons
+        keyboard = create_button_keyboard(buttons)
+        await update.message.reply_text(welcome_msg, reply_markup=keyboard)
+    else:
+        welcome_msg += """🚀 **Get Started:**
+
+1️⃣ Add quick buttons:
+   `/addbutton prayer 15` - Adds a 15min button
+   `/addbutton exercise 30` - Adds a 30min button
+
+2️⃣ Set goals:
+   `/setgoal prayer 600 week` - 10h/week goal
+   `/setgoal exercise 30 day` - 30min/day goal
+
+3️⃣ Tap buttons to log activities!
+
+**Commands:**
+/today - Today's summary
+/week - This week's summary
+/goals - View your goals
+/streak - View your streaks
+/help - Full help
+
+Let's start! Try: `/addbutton prayer 15`
+"""
+        await update.message.reply_text(welcome_msg)
+
+
+def create_button_keyboard(buttons: List[Tuple]) -> InlineKeyboardMarkup:
+    """Create inline keyboard from quick buttons"""
+    keyboard = []
+    for activity_name, duration, emoji in buttons:
+        button_text = f"{emoji} {activity_name.title()} {duration}m"
+        callback_data = f"log_{activity_name}_{duration}"
+        keyboard.append([InlineKeyboardButton(button_text, callback_data=callback_data)])
+    
+    # Add refresh button
+    keyboard.append([InlineKeyboardButton("🔄 Refresh Buttons", callback_data="refresh")])
+    
+    return InlineKeyboardMarkup(keyboard)
+
+
+async def show_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Show user's quick buttons"""
+    user_id = update.effective_user.id
+    buttons = db.get_quick_buttons(user_id)
+    
+    if not buttons:
         await update.message.reply_text(
-            f"👋 Welcome back, {user.first_name}!\n\n"
-            f"Your Google Sheet is connected! ✅\n\n"
-            f"📝 Log: `exercise 30m`\n"
-            f"📊 Today: /today\n"
-            f"🎯 Goals: /goals\n"
-            f"📄 Sheet: /sheet"
+            "You don't have any quick buttons yet!\n\n"
+            "Add one with: `/addbutton prayer 15`"
+        )
+        return
+    
+    keyboard = create_button_keyboard(buttons)
+    await update.message.reply_text("⚡ **Quick Log:**", reply_markup=keyboard)
+
+
+async def add_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Add a quick button"""
+    user_id = update.effective_user.id
+    
+    if not context.args or len(context.args) < 2:
+        await update.message.reply_text(
+            "Usage: `/addbutton <activity> <minutes> [emoji]`\n\n"
+            "Examples:\n"
+            "• `/addbutton prayer 15` - Default emoji\n"
+            "• `/addbutton prayer 30 🙏` - Custom emoji\n"
+            "• `/addbutton exercise 45 💪`\n"
+            "• `/addbutton reading 60 📖`"
+        )
+        return
+    
+    activity = context.args[0].lower()
+    try:
+        duration = int(context.args[1])
+    except:
+        await update.message.reply_text("❌ Invalid number!")
+        return
+    
+    emoji = context.args[2] if len(context.args) >= 3 else '⭐'
+    
+    if db.add_quick_button(user_id, activity, duration, emoji):
+        await update.message.reply_text(
+            f"✅ Quick button added!\n"
+            f"{emoji} {activity.title()} {duration}m\n\n"
+            "Use /buttons to see all your buttons!"
+        )
+        
+        # Show updated buttons
+        buttons = db.get_quick_buttons(user_id)
+        keyboard = create_button_keyboard(buttons)
+        await update.message.reply_text("⚡ **Your Buttons:**", reply_markup=keyboard)
+    else:
+        await update.message.reply_text("❌ Button already exists or failed to add.")
+
+
+async def remove_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Remove a quick button"""
+    user_id = update.effective_user.id
+    
+    if not context.args or len(context.args) < 2:
+        await update.message.reply_text(
+            "Usage: `/removebutton <activity> <minutes>`\n\n"
+            "Example: `/removebutton prayer 15`"
+        )
+        return
+    
+    activity = context.args[0].lower()
+    try:
+        duration = int(context.args[1])
+    except:
+        await update.message.reply_text("❌ Invalid number!")
+        return
+    
+    if db.remove_quick_button(user_id, activity, duration):
+        await update.message.reply_text(
+            f"✅ Button removed!\n"
+            f"{activity.title()} {duration}m"
         )
     else:
-        await update.message.reply_text(
-            f"👋 Hey {user.first_name}! Welcome to Productivity Bot!\n\n"
-            f"**Setup Instructions:**\n\n"
-            f"1. Create a new Google Sheet at sheets.google.com\n"
-            f"2. Share it with this email (Editor access):\n"
-            f"   `{get_service_account_email()}`\n"
-            f"3. Copy the sheet URL\n"
-            f"4. Send me: `/connect <sheet-url>`\n\n"
-            f"Example:\n"
-            f"`/connect https://docs.google.com/spreadsheets/d/abc123...`\n\n"
-            f"✅ Your data stays in YOUR Google account!\n"
-            f"✅ Only you can see it (unless you share it)\n"
-            f"✅ You can view/edit it anytime"
-        )
+        await update.message.reply_text("❌ Button not found.")
 
 
-async def connect_sheet(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Connect user's Google Sheet"""
+async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle button clicks"""
+    query = update.callback_query
+    await query.answer()
+    
+    user_id = query.from_user.id
+    data = query.data
+    
+    if data == "refresh":
+        # Refresh buttons
+        buttons = db.get_quick_buttons(user_id)
+        if buttons:
+            keyboard = create_button_keyboard(buttons)
+            await query.edit_message_text("⚡ **Quick Log:**", reply_markup=keyboard)
+        else:
+            await query.edit_message_text("No buttons yet! Add one with /addbutton")
+        return
+    
+    if data.startswith("log_"):
+        _, activity_name, duration_str = data.split("_")
+        duration = int(duration_str)
+        
+        if db.log_activity(user_id, activity_name, duration):
+            # Get goals for this activity
+            goals = db.get_active_goals(user_id)
+            msg = f"✅ {activity_name.title()}: {duration}m logged!"
+            
+            # Show goal progress
+            for goal_activity, target, current, period in goals:
+                if goal_activity == activity_name:
+                    pct = (current / target * 100) if target > 0 else 0
+                    period_txt = "today" if period == 'day' else "this week"
+                    status = "✅" if pct >= 100 else "⏳"
+                    msg += f"\n{status} Goal ({period_txt}): {current}/{target}m ({pct:.0f}%)"
+            
+            await query.edit_message_text(msg)
+        else:
+            await query.edit_message_text("❌ Failed to log. Try again!")
+
+
+async def log_manual(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Manual logging via command"""
     user_id = update.effective_user.id
     
-    if not context.args:
+    if not context.args or len(context.args) < 2:
         await update.message.reply_text(
-            "Please provide your Google Sheet URL:\n\n"
-            "Usage: `/connect <sheet-url>`\n\n"
-            "Example:\n"
-            "`/connect https://docs.google.com/spreadsheets/d/abc123...`"
+            "Usage: `/log <activity> <time>`\n\n"
+            "Examples:\n"
+            "• `/log prayer 15m`\n"
+            "• `/log exercise 1h`"
         )
         return
     
-    sheet_url = context.args[0]
+    activity = context.args[0].lower()
+    time_str = context.args[1]
     
-    # Validate URL
-    if 'docs.google.com/spreadsheets' not in sheet_url:
-        await update.message.reply_text(
-            "❌ That doesn't look like a Google Sheets URL!\n\n"
-            "It should look like:\n"
-            "`https://docs.google.com/spreadsheets/d/...`"
-        )
+    # Parse time
+    match = re.match(r'(\d+)(m|h)', time_str, re.IGNORECASE)
+    if not match:
+        await update.message.reply_text("❌ Invalid time format! Use 15m or 1h")
         return
     
-    await update.message.reply_text("⏳ Connecting to your sheet...")
+    duration = int(match.group(1))
+    unit = match.group(2).lower()
+    if unit == 'h':
+        duration *= 60
     
-    try:
-        client = get_sheets_client()
-        db = SimpleMultiUserDB(sheet_url, client)
-        
-        # Store connection
-        user_sheets[user_id] = db
-        user_sheet_urls[user_id] = sheet_url
-        
-        # Save to file for persistence
-        save_user_connections()
-        
-        await update.message.reply_text(
-            "✅ **Connected successfully!**\n\n"
-            "Your productivity tracker is ready!\n\n"
-            "Try logging an activity:\n"
-            "`exercise 30m`\n\n"
-            "Commands: /help"
-        )
-    except Exception as e:
-        logger.error(f"Connection error: {e}")
-        await update.message.reply_text(
-            "❌ **Connection failed!**\n\n"
-            "Please make sure:\n"
-            "1. The sheet exists\n"
-            "2. You shared it with:\n"
-            f"   `{get_service_account_email()}`\n"
-            "3. You gave 'Editor' access\n"
-            "4. The URL is correct\n\n"
-            "Try again with: `/connect <url>`"
-        )
-
-
-def get_service_account_email() -> str:
-    """Get service account email from credentials"""
-    raw = os.getenv('GOOGLE_CREDENTIALS')
-    if not raw:
-        return 'ERROR: Configure GOOGLE_CREDENTIALS'
-    
-    try:
-        creds_dict = json.loads(raw)
-    except:
-        try:
-            creds_dict = eval(raw)
-        except:
-            return 'ERROR: Invalid GOOGLE_CREDENTIALS'
-    
-    return creds_dict.get('client_email', 'ERROR: Email not found')
-
-
-async def sheet_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Send link to user's spreadsheet"""
-    user_id = update.effective_user.id
-    
-    if user_id not in user_sheet_urls:
-        await update.message.reply_text("⚠️ No sheet connected! Send /start for instructions.")
-        return
-    
-    await update.message.reply_text(
-        f"📊 **Your Productivity Spreadsheet:**\n\n"
-        f"{user_sheet_urls[user_id]}\n\n"
-        f"You can view and edit it anytime!"
-    )
-
-
-async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Send help message"""
-    user_id = update.effective_user.id
-    
-    if user_id not in user_sheets:
-        await update.message.reply_text(
-            "⚠️ No sheet connected yet!\n\n"
-            "Send /start for setup instructions."
-        )
-        return
-    
-    await update.message.reply_text(
-        "📚 **How to use:**\n\n"
-        "**Log activities:**\n"
-        "• `exercise 30m`\n"
-        "• `reading 1h great book`\n\n"
-        "**Commands:**\n"
-        "/today - Today's activities\n"
-        "/week - Week summary\n"
-        "/goals - Goal progress\n"
-        "/setgoal <activity> <min> [period] - Set goal\n"
-        "  Examples:\n"
-        "  • `/setgoal exercise 150` (weekly)\n"
-        "  • `/setgoal meditation 15 daily`\n"
-        "/streak - View streaks\n"
-        "/sheet - Get sheet link\n\n"
-        "✅ All data in YOUR Google Sheet!"
-    )
+    if db.log_activity(user_id, activity, duration):
+        await update.message.reply_text(f"✅ Logged: {activity.title()} {duration}m")
+    else:
+        await update.message.reply_text("❌ Failed to log!")
 
 
 async def today_summary(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Show today's activities"""
     user_id = update.effective_user.id
-    db = get_user_db(user_id)
-    
-    if not db:
-        await update.message.reply_text("⚠️ No sheet connected! Send /start")
-        return
-    
-    activities = db.get_today_activities()
+    activities = db.get_today_activities(user_id)
     
     if not activities:
-        await update.message.reply_text("No activities today yet! 💪")
+        await update.message.reply_text("📊 No activities today yet!\n\nTap a quick button to log! /buttons")
         return
     
+    # Group by activity
     activity_totals = {}
-    for activity_name, duration, _, _ in activities:
+    for activity_name, duration, timestamp, notes in activities:
         activity_totals[activity_name] = activity_totals.get(activity_name, 0) + duration
     
-    msg = "📊 **Today's Activities:**\n\n"
+    msg = f"📊 **Today ({datetime.now().strftime('%A, %b %d')})**\n\n"
     total = 0
     
     for activity, duration in sorted(activity_totals.items()):
@@ -555,18 +732,17 @@ async def today_summary(update: Update, context: ContextTypes.DEFAULT_TYPE):
         total += duration
     
     h, m = total // 60, total % 60
-    msg += f"\n**Total: {h}h {m}m" if h > 0 else f"\n**Total: {m}m"
-    msg += "**"
+    msg += f"\n**Total: {h}h {m}m**" if h > 0 else f"\n**Total: {m}m**"
     
-    # Check for daily and weekly goals
-    goals = db.get_active_goals()
-    if goals:
-        msg += "\n\n🎯 **Goal Progress:**\n"
-        for activity_name, target, current, period in goals:
-            if activity_name in activity_totals:
-                percentage = (current / target * 100) if target > 0 else 0
-                period_text = "day" if period == 'day' else "week"
-                msg += f"• {activity_name.title()}: {current}/{target}m ({percentage:.0f}%) - {period_text}ly\n"
+    # Show daily goals
+    goals = db.get_active_goals(user_id)
+    daily_goals = [g for g in goals if g[3] == 'day']
+    if daily_goals:
+        msg += "\n\n🎯 **Daily Goals:**\n"
+        for activity_name, target, current, _ in daily_goals:
+            pct = (current / target * 100) if target > 0 else 0
+            status = "✅" if pct >= 100 else "⏳"
+            msg += f"{status} {activity_name.title()}: {current}/{target}m ({pct:.0f}%)\n"
     
     await update.message.reply_text(msg)
 
@@ -574,16 +750,10 @@ async def today_summary(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def week_summary(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Show week summary"""
     user_id = update.effective_user.id
-    db = get_user_db(user_id)
-    
-    if not db:
-        await update.message.reply_text("⚠️ No sheet connected! Send /start")
-        return
-    
-    activities = db.get_week_summary()
+    activities = db.get_week_summary(user_id)
     
     if not activities:
-        await update.message.reply_text("No activities this week!")
+        await update.message.reply_text("📈 No activities this week yet!")
         return
     
     msg = "📈 **This Week:**\n\n"
@@ -591,7 +761,7 @@ async def week_summary(update: Update, context: ContextTypes.DEFAULT_TYPE):
     for activity_name, total_minutes, count in activities:
         h, m = total_minutes // 60, total_minutes % 60
         time_str = f"{h}h {m}m" if h > 0 else f"{m}m"
-        streak = db.get_streak(activity_name)
+        streak = db.get_streak(user_id, activity_name)
         streak_txt = f" 🔥{streak}" if streak > 0 else ""
         msg += f"• {activity_name.title()}: {time_str} ({count}x){streak_txt}\n"
     
@@ -601,30 +771,38 @@ async def week_summary(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def goals_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Show goals"""
     user_id = update.effective_user.id
-    db = get_user_db(user_id)
-    
-    if not db:
-        await update.message.reply_text("⚠️ No sheet connected! Send /start")
-        return
-    
-    goals = db.get_active_goals()
+    goals = db.get_active_goals(user_id)
     
     if not goals:
         await update.message.reply_text(
-            "No goals set!\n\n"
+            "🎯 No goals set!\n\n"
             "Examples:\n"
-            "• `/setgoal exercise 150` (weekly)\n"
-            "• `/setgoal meditation 15 daily`"
+            "• `/setgoal prayer 600 week` - 10h/week\n"
+            "• `/setgoal exercise 30 day` - 30min/day"
         )
         return
     
     msg = "🎯 **Your Goals:**\n\n"
     
-    for activity_name, target, current, period in goals:
-        pct = (current / target * 100) if target > 0 else 0
-        bar = "█" * int(pct / 10) + "░" * (10 - int(pct / 10))
-        period_text = "day" if period == 'day' else "week"
-        msg += f"**{activity_name.title()}** ({period_text}ly)\n{bar} {pct:.0f}%\n{current}/{target}m\n\n"
+    # Group by period
+    daily_goals = [g for g in goals if g[3] == 'day']
+    weekly_goals = [g for g in goals if g[3] == 'week']
+    
+    if daily_goals:
+        msg += "**Daily Goals:**\n"
+        for activity_name, target, current, _ in daily_goals:
+            pct = (current / target * 100) if target > 0 else 0
+            bar = "█" * int(pct / 10) + "░" * (10 - int(pct / 10))
+            status = "✅" if pct >= 100 else ""
+            msg += f"{activity_name.title()}\n{bar} {pct:.0f}% {status}\n{current}/{target}m\n\n"
+    
+    if weekly_goals:
+        msg += "**Weekly Goals:**\n"
+        for activity_name, target, current, _ in weekly_goals:
+            pct = (current / target * 100) if target > 0 else 0
+            bar = "█" * int(pct / 10) + "░" * (10 - int(pct / 10))
+            status = "✅" if pct >= 100 else ""
+            msg += f"{activity_name.title()}\n{bar} {pct:.0f}% {status}\n{current}/{target}m\n\n"
     
     await update.message.reply_text(msg)
 
@@ -632,228 +810,196 @@ async def goals_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def set_goal(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Set goal"""
     user_id = update.effective_user.id
-    db = get_user_db(user_id)
-    
-    if not db:
-        await update.message.reply_text("⚠️ No sheet connected! Send /start")
-        return
     
     if not context.args or len(context.args) < 2:
         await update.message.reply_text(
             "Usage: `/setgoal <activity> <minutes> [period]`\n\n"
             "Examples:\n"
-            "• `/setgoal exercise 150` - 150 min/week (default)\n"
-            "• `/setgoal exercise 30 daily` - 30 min/day\n"
-            "• `/setgoal reading 300 weekly` - 300 min/week"
+            "• `/setgoal prayer 600 week` - 10h/week\n"
+            "• `/setgoal exercise 30 day` - 30min/day\n"
+            "• `/setgoal reading 300` - defaults to week"
         )
         return
     
     activity = context.args[0].lower()
-    
-    # Try to parse the target number
-    target = None
-    period = 'week'  # default
-    
-    # Find the number in args
-    for i, arg in enumerate(context.args[1:], start=1):
-        # Remove common punctuation
-        cleaned_arg = arg.strip('()[]{}').lower()
-        
-        # Try to parse as number
-        try:
-            target = int(cleaned_arg)
-            # Found the number, now check for period in remaining args
-            for remaining_arg in context.args[i+1:]:
-                cleaned_remaining = remaining_arg.strip('()[]{}').lower()
-                if cleaned_remaining in ['daily', 'day', 'd']:
-                    period = 'day'
-                    break
-                elif cleaned_remaining in ['weekly', 'week', 'w']:
-                    period = 'week'
-                    break
-            break
-        except ValueError:
-            # Check if this arg is a period keyword
-            if cleaned_arg in ['daily', 'day', 'd']:
-                period = 'day'
-            elif cleaned_arg in ['weekly', 'week', 'w']:
-                period = 'week'
-            continue
-    
-    if target is None:
-        await update.message.reply_text(
-            "❌ Couldn't find a valid number!\n\n"
-            "Usage: `/setgoal <activity> <minutes> [period]`\n"
-            "Example: `/setgoal pray 45 daily`"
-        )
+    try:
+        target = int(context.args[1])
+    except:
+        await update.message.reply_text("❌ Invalid number!")
         return
     
-    if db.set_goal(activity, target, period):
+    period = 'week'
+    if len(context.args) >= 3:
+        period_arg = context.args[2].lower()
+        if period_arg in ['day', 'daily', 'd']:
+            period = 'day'
+        elif period_arg not in ['week', 'weekly', 'w']:
+            await update.message.reply_text("❌ Invalid period! Use 'day' or 'week'")
+            return
+    
+    if db.set_goal(user_id, activity, target, period):
         h, m = target // 60, target % 60
         time = f"{h}h {m}m" if h > 0 else f"{m}m"
-        period_text = "day" if period == 'day' else "week"
+        period_txt = "per day" if period == 'day' else "per week"
         await update.message.reply_text(
-            f"✅ Goal set!\n{activity.title()}: {time}/{period_text} 💪"
+            f"✅ Goal set!\n"
+            f"{activity.title()}: {time} {period_txt} 💪"
         )
     else:
-        await update.message.reply_text(
-            "❌ Failed to set goal!\n\n"
-            "Possible issues:\n"
-            "• Check your Google Sheet permissions\n"
-            "• Make sure the 'Goals' sheet exists\n"
-            "• Try reconnecting: /disconnect then /connect"
-        )
+        await update.message.reply_text("❌ Failed to set goal!")
 
 
 async def streak_info(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Show streaks"""
     user_id = update.effective_user.id
-    db = get_user_db(user_id)
-    
-    if not db:
-        await update.message.reply_text("⚠️ No sheet connected! Send /start")
-        return
-    
-    activities = db.get_week_summary()
+    activities = db.get_week_summary(user_id)
     
     if not activities:
-        await update.message.reply_text("No activities yet!")
+        await update.message.reply_text("🔥 No activities to show streaks for yet!")
         return
     
-    msg = "🔥 **Streaks:**\n\n"
+    msg = "🔥 **Your Streaks:**\n\n"
+    has_streak = False
     
     for activity_name, _, _ in activities:
-        streak = db.get_streak(activity_name)
+        streak = db.get_streak(user_id, activity_name)
         if streak > 0:
             msg += f"• {activity_name.title()}: {streak} day{'s' if streak != 1 else ''} 🔥\n"
+            has_streak = True
         else:
-            msg += f"• {activity_name.title()}: No streak\n"
+            msg += f"• {activity_name.title()}: No active streak\n"
+    
+    if not has_streak:
+        msg += "\n💡 Tip: Do activities daily to build streaks!"
     
     await update.message.reply_text(msg)
 
 
-async def disconnect_sheet(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Disconnect user's Google Sheet"""
+async def generate_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Generate and send PDF report"""
     user_id = update.effective_user.id
+    username = update.effective_user.first_name
     
-    if user_id not in user_sheets:
-        await update.message.reply_text("⚠️ No sheet connected!")
-        return
-    
-    # Remove from memory
-    del user_sheets[user_id]
-    del user_sheet_urls[user_id]
-    
-    # Save updated connections
-    save_user_connections()
-    
-    logger.info(f"User {user_id} disconnected")
-    
-    await update.message.reply_text(
-        "✅ **Disconnected successfully!**\n\n"
-        "Your data is still safe in your Google Sheet.\n\n"
-        "To reconnect later, use:\n"
-        "`/connect <sheet-url>`"
-    )
-
-
-async def debug_sheet(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Debug command to check sheet structure"""
-    user_id = update.effective_user.id
-    db = get_user_db(user_id)
-    
-    if not db:
-        await update.message.reply_text("⚠️ No sheet connected! Send /start")
-        return
+    await update.message.reply_text("📊 Generating your report... ⏳")
     
     try:
-        # Check Goals sheet
-        headers = db.goals_sheet.row_values(1)
-        all_data = db.goals_sheet.get_all_values()
+        pdf_buffer = generate_weekly_pdf(user_id, username)
         
-        msg = f"🔍 **Goals Sheet Debug Info:**\n\n"
-        msg += f"**Headers:** {headers}\n\n"
-        msg += f"**Total rows:** {len(all_data)}\n\n"
-        
-        if len(all_data) > 1:
-            msg += "**First few rows:**\n"
-            for i, row in enumerate(all_data[1:6], start=2):  # Show rows 2-6
-                msg += f"Row {i}: {row}\n"
-        else:
-            msg += "No data rows (only headers)\n"
-        
-        msg += f"\n**Sheet URL:** {db.spreadsheet.url}"
-        
-        await update.message.reply_text(msg)
-        
+        await update.message.reply_document(
+            document=pdf_buffer,
+            filename=f"productivity_report_{datetime.now().strftime('%Y%m%d')}.pdf",
+            caption="📊 Here's your weekly productivity report!"
+        )
     except Exception as e:
-        await update.message.reply_text(f"❌ Error reading sheet: {str(e)}")
+        logger.error(f"Error generating report: {e}")
+        await update.message.reply_text("❌ Failed to generate report. Make sure you have some activities logged!")
+
+
+async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Send help message"""
+    help_text = """📚 **Productivity Bot - Help**
+
+🚀 **QUICK START:**
+1. `/addbutton prayer 15` - Add button
+2. Tap button to log activity!
+3. `/today` - See your progress
+
+⚡ **QUICK BUTTONS:**
+`/addbutton <activity> <min> [emoji]`
+`/removebutton <activity> <min>`
+`/buttons` - Show all buttons
+
+📝 **LOGGING:**
+• Tap quick buttons (easiest!)
+• `/log prayer 30m` - Manual logging
+
+🎯 **GOALS:**
+`/setgoal <activity> <min> <day/week>`
+`/goals` - View all goals
+
+📊 **TRACKING:**
+`/today` - Today's summary
+`/week` - This week's summary
+`/streak` - View your streaks
+`/report` - Generate PDF report
+
+**Examples:**
+• `/addbutton prayer 15 🙏`
+• `/setgoal prayer 600 week`
+• `/log exercise 45m`
+
+Keep it simple - just tap buttons! 🎯
+"""
+    await update.message.reply_text(help_text)
 
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle activity logging"""
+    """Handle text messages for logging"""
     user_id = update.effective_user.id
-    db = get_user_db(user_id)
+    text = update.message.text
     
-    if not db:
-        await update.message.reply_text(
-            "⚠️ No sheet connected!\n\nSend /start for setup."
-        )
-        return
-    
-    parsed = parse_activity(update.message.text)
+    parsed = parse_activity(text)
     
     if parsed:
         activity_name, duration, notes = parsed
         
-        if db.log_activity(activity_name, duration, notes):
+        if db.log_activity(user_id, activity_name, duration, notes):
             msg = f"✅ {activity_name.title()}: {duration}m"
             if notes:
                 msg += f"\n💭 {notes}"
             
-            goals = db.get_active_goals()
-            for goal_activity, target, current, _ in goals:
+            goals = db.get_active_goals(user_id)
+            for goal_activity, target, current, period in goals:
                 if goal_activity == activity_name:
                     pct = (current / target * 100) if target > 0 else 0
-                    msg += f"\n\n🎯 Goal: {current}/{target}m ({pct:.0f}%)"
+                    period_txt = "today" if period == 'day' else "this week"
+                    msg += f"\n\n🎯 Goal ({period_txt}): {current}/{target}m ({pct:.0f}%)"
             
             await update.message.reply_text(msg)
         else:
-            await update.message.reply_text("Failed to log!")
+            await update.message.reply_text("❌ Failed to log!")
     else:
         await update.message.reply_text(
-            "Try: `exercise 30m` or /help"
+            "💡 Try:\n"
+            "• Tap a quick button (/buttons)\n"
+            "• Or type: `prayer 30m`\n"
+            "• Or use: `/log prayer 30m`"
         )
 
 
 def main():
-    """Start bot"""
+    """Start the bot"""
     TOKEN = os.getenv('TELEGRAM_BOT_TOKEN')
     
     if not TOKEN:
-        print("Error: TELEGRAM_BOT_TOKEN not set!")
+        print("❌ Error: TELEGRAM_BOT_TOKEN not set!")
+        print("\n📝 To get your token:")
+        print("1. Open Telegram and search for @BotFather")
+        print("2. Send /newbot and follow instructions")
+        print("3. Set environment variable:")
+        print("   export TELEGRAM_BOT_TOKEN='your-token-here'")
         return
-    
-    # Load existing user connections
-    print("Loading user connections...")
-    load_user_connections()
     
     application = Application.builder().token(TOKEN).build()
     
+    # Register handlers
     application.add_handler(CommandHandler("start", start))
-    application.add_handler(CommandHandler("connect", connect_sheet))
-    application.add_handler(CommandHandler("disconnect", disconnect_sheet))
-    application.add_handler(CommandHandler("debug", debug_sheet))
     application.add_handler(CommandHandler("help", help_command))
-    application.add_handler(CommandHandler("sheet", sheet_link))
+    application.add_handler(CommandHandler("buttons", show_buttons))
+    application.add_handler(CommandHandler("addbutton", add_button))
+    application.add_handler(CommandHandler("removebutton", remove_button))
+    application.add_handler(CommandHandler("log", log_manual))
     application.add_handler(CommandHandler("today", today_summary))
     application.add_handler(CommandHandler("week", week_summary))
     application.add_handler(CommandHandler("goals", goals_status))
     application.add_handler(CommandHandler("setgoal", set_goal))
     application.add_handler(CommandHandler("streak", streak_info))
+    application.add_handler(CommandHandler("report", generate_report))
+    application.add_handler(CallbackQueryHandler(button_callback))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     
-    print("Bot starting...")
+    print("✅ Bot is starting...")
+    print("📊 Productivity Bot is ready!")
     application.run_polling(allowed_updates=Update.ALL_TYPES)
 
 
