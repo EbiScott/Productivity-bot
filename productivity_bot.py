@@ -12,7 +12,7 @@ from typing import Optional, List, Tuple, Dict
 import logging
 from pathlib import Path
 
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, BotCommand
 from telegram.ext import (
     Application,
     CommandHandler,
@@ -518,15 +518,18 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         welcome_msg += """🚀 **Get Started:**
 
-1️⃣ Add quick buttons:
+1️⃣ Set goals(what you want to track):
+   `/setgoal prayer 600 week` - 10h/week goal
+   `/setgoal exercise 30 day` - 30min/day goal 
+
+2️⃣  Add quick buttons(buttons for  ease):
    `/addbutton prayer 15` - Adds a 15min button
    `/addbutton exercise 30` - Adds a 30min button
 
-2️⃣ Set goals:
-   `/setgoal prayer 600 week` - 10h/week goal
-   `/setgoal exercise 30 day` - 30min/day goal
+3️⃣ Tap buttons to record activities!
 
-3️⃣ Tap buttons to log activities!
+Tip: click on the higlighted text to copy it and modify it to set your goals or add buttons
+Also, your goal should be one word activity name followed by time in minutes and optionally the period (day/week) for goals or emoji for buttons.
 
 **Commands:**
 /today - Today's summary
@@ -535,7 +538,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 /streak - View your streaks
 /help - Full help
 
-Let's start! Try: `/addbutton prayer 15`
+Let's start! Try: `/setgoal prayer 15`
 """
         await update.message.reply_text(welcome_msg,
                                         parse_mode="Markdown")
@@ -920,7 +923,9 @@ Hi there, before you start this, I want you to know that you can track your prod
 So first of all set goals, using the /setgoal command, then add quick buttons for your activities, and then just tap the buttons to log your activities. You can also log manually using the /log command.
 Every Sunday you would get a PDF report of your activities for the week.
 
-1. `/setgoal prayer 300 weekly - set prayer goal of 300 mins weekly
+NOTE: You have to type out the command in full, you shouldn't just click it.
+
+1. `/setgoal prayer 300 weekly` - set prayer goal of 300 mins weekly
 2. `/addbutton prayer 15` - Add button
 3. Tap button to log activity!
 4. `/today` - See your progress
@@ -945,13 +950,22 @@ Every Sunday you would get a PDF report of your activities for the week.
 `/report` - Generate PDF report
 
 **Examples:**
-• `/addbutton prayer 15 🙏`
 • `/setgoal prayer 600 week`
+• `/addbutton prayer 15 🙏`
 • `/log exercise 45m`
 
 Keep it simple - just tap buttons! 🎯
 """
-    await update.message.reply_text(help_text, parse_mode="Markdown")
+    try:
+        await update.message.reply_text(help_text, parse_mode="Markdown")
+    except Exception as e:
+        logger.error(f"Error sending help message: {e}")
+        # fallback to plain text to ensure the user still receives guidance
+        await update.message.reply_text(
+            "Commands: /start, /setgoal, /addbutton, /today, /week, /streak, /report\n"
+            "Use /start for step‑by‑step instructions.",
+            parse_mode=None,
+        )
 
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -990,8 +1004,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
 
 
-def main():
-    """Start the bot"""
+async def main():
+    """Start the bot and register commands"""
     TOKEN = os.getenv('TELEGRAM_BOT_TOKEN')
     
     if not TOKEN:
@@ -1021,10 +1035,31 @@ def main():
     application.add_handler(CallbackQueryHandler(button_callback))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     
+    # define command list for Telegram clients
+    commands = [
+        BotCommand("start", "Show welcome message & quick log buttons"),
+        BotCommand("help", "Display full help text with examples"),
+        BotCommand("buttons", "List your quick‑log buttons"),
+        BotCommand("addbutton", "Usage: /addbutton <activity> <min> [emoji]"),
+        BotCommand("removebutton", "Usage: /removebutton <activity> <min>"),
+        BotCommand("log", "Manual log – /log <activity> <time> (e.g. 30m or 1h)"),
+        BotCommand("today", "Show today’s activity summary"),
+        BotCommand("week", "Show this week’s summary & streaks"),
+        BotCommand("goals", "List active goals with progress"),
+        BotCommand("setgoal", "Set goal: /setgoal <activity> <min> [day/week]"),
+        BotCommand("streak", "View current activity streaks"),
+        BotCommand("report", "Generate & receive PDF report"),
+    ]
+    try:
+        await application.bot.set_my_commands(commands)
+    except Exception as e:
+        logger.warning(f"Failed to set bot commands: {e}")
+    
     print("✅ Bot is starting...")
     print("📊 Productivity Bot is ready!")
-    application.run_polling(allowed_updates=Update.ALL_TYPES)
+    await application.run_polling(allowed_updates=Update.ALL_TYPES)
 
 
 if __name__ == '__main__':
-    main()
+    import asyncio
+    asyncio.run(main())
