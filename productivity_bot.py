@@ -916,9 +916,14 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     help_text = """📚 **Productivity Bot - Help**
 
 🚀 **QUICK START:**
-1. `/addbutton prayer 15` - Add button
-2. Tap button to log activity!
-3. `/today` - See your progress
+Hi there, before you start this, I want you to know that you can track your productivity.
+So first of all set goals, using the /setgoal command, then add quick buttons for your activities, and then just tap the buttons to log your activities. You can also log manually using the /log command.
+Every Sunday you would get a PDF report of your activities for the week.
+
+1. `/setgoal prayer 300 weekly - set prayer goal of 300 mins weekly
+2. `/addbutton prayer 15` - Add button
+3. Tap button to log activity!
+4. `/today` - See your progress
 
 ⚡ **QUICK BUTTONS:**
 `/addbutton <activity> <min> [emoji]`
