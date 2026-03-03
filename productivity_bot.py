@@ -12,7 +12,7 @@ from typing import Optional, List, Tuple, Dict
 import logging
 from pathlib import Path
 
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ParseMode
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     Application,
     CommandHandler,
@@ -514,7 +514,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # Show buttons
         keyboard = create_button_keyboard(buttons)
         await update.message.reply_text(welcome_msg, reply_markup=keyboard,
-                        parse_mode=ParseMode.MARKDOWN)
+                        parse_mode="Markdown")
     else:
         welcome_msg += """🚀 **Get Started:**
 
@@ -538,8 +538,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 Let's start! Try: `/addbutton prayer 15`
 """
         await update.message.reply_text(welcome_msg,
-                        parse_mode=ParseMode.MARKDOWN)
-
+                                        parse_mode="Markdown")
 
 def create_button_keyboard(buttons: List[Tuple]) -> InlineKeyboardMarkup:
     """Create inline keyboard from quick buttons"""
@@ -569,7 +568,7 @@ async def show_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     keyboard = create_button_keyboard(buttons)
     await update.message.reply_text("⚡ **Quick Log:**", reply_markup=keyboard,
-                                    parse_mode=ParseMode.MARKDOWN)
+                                    parse_mode="Markdown")
 
 
 async def add_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -591,7 +590,7 @@ async def add_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         duration = int(context.args[1])
     except:
-        await update.message.reply_text("❌ Invalid number!", parse_mode=ParseMode.MARKDOWN)
+        await update.message.reply_text("❌ Invalid number!", parse_mode="Markdown")
         return
     
     emoji = context.args[2] if len(context.args) >= 3 else '⭐'
@@ -601,18 +600,17 @@ async def add_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"✅ Quick button added!\n"
             f"{emoji} {activity.title()} {duration}m\n\n"
             "Use /buttons to see all your buttons!",
-            parse_mode=ParseMode.MARKDOWN
+            parse_mode="Markdown"
         )
         
         # Show updated buttons
         buttons = db.get_quick_buttons(user_id)
         keyboard = create_button_keyboard(buttons)
         await update.message.reply_text("⚡ **Your Buttons:**", reply_markup=keyboard,
-                        parse_mode=ParseMode.MARKDOWN)
+                        parse_mode="Markdown")
     else:
         await update.message.reply_text("❌ Button already exists or failed to add.",
-                        parse_mode=ParseMode.MARKDOWN)
-
+                                        parse_mode="Markdown")
 
 async def remove_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Remove a quick button"""
@@ -629,17 +627,17 @@ async def remove_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         duration = int(context.args[1])
     except:
-        await update.message.reply_text("❌ Invalid number!", parse_mode=ParseMode.MARKDOWN)
+        await update.message.reply_text("❌ Invalid number!", parse_mode="Markdown")
         return
     
     if db.remove_quick_button(user_id, activity, duration):
         await update.message.reply_text(
             f"✅ Button removed!\n"
             f"{activity.title()} {duration}m",
-            parse_mode=ParseMode.MARKDOWN
+            parse_mode="Markdown"
         )
     else:
-        await update.message.reply_text("❌ Button not found.", parse_mode=ParseMode.MARKDOWN)
+        await update.message.reply_text("❌ Button not found.", parse_mode="Markdown")
 
 
 async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -677,9 +675,9 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     status = "✅" if pct >= 100 else "⏳"
                     msg += f"\n{status} Goal ({period_txt}): {current}/{target}m ({pct:.0f}%)"
             
-            await query.edit_message_text(msg, parse_mode=ParseMode.MARKDOWN)
+            await query.edit_message_text(msg, parse_mode="Markdown")
         else:
-            await query.edit_message_text("❌ Failed to log. Try again!", parse_mode=ParseMode.MARKDOWN)
+            await query.edit_message_text("❌ Failed to log. Try again!", parse_mode="Markdown")
 
 
 async def log_manual(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -692,7 +690,7 @@ async def log_manual(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "Examples:\n"
             "• `/log prayer 15m`\n"
             "• `/log exercise 1h`",
-            parse_mode=ParseMode.MARKDOWN
+            parse_mode="Markdown"
         )
         return
     
@@ -703,7 +701,7 @@ async def log_manual(update: Update, context: ContextTypes.DEFAULT_TYPE):
     match = re.match(r'(\d+)(m|h)', time_str, re.IGNORECASE)
     if not match:
         await update.message.reply_text("❌ Invalid time format! Use 15m or 1h",
-                        parse_mode=ParseMode.MARKDOWN)
+                        parse_mode="Markdown")
         return
     
     duration = int(match.group(1))
@@ -713,9 +711,9 @@ async def log_manual(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     if db.log_activity(user_id, activity, duration):
         await update.message.reply_text(f"✅ Logged: {activity.title()} {duration}m",
-                        parse_mode=ParseMode.MARKDOWN)
+                        parse_mode="Markdown")
     else:
-        await update.message.reply_text("❌ Failed to log!", parse_mode=ParseMode.MARKDOWN)
+        await update.message.reply_text("❌ Failed to log!", parse_mode="Markdown")
 
 
 async def today_summary(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -725,7 +723,7 @@ async def today_summary(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     if not activities:
         await update.message.reply_text("📊 No activities today yet!\n\nTap a quick button to log! /buttons",
-                        parse_mode=ParseMode.MARKDOWN)
+                        parse_mode="Markdown")
         return
     
     # Group by activity
@@ -755,7 +753,7 @@ async def today_summary(update: Update, context: ContextTypes.DEFAULT_TYPE):
             status = "✅" if pct >= 100 else "⏳"
             msg += f"{status} {activity_name.title()}: {current}/{target}m ({pct:.0f}%)\n"
     
-    await update.message.reply_text(msg, parse_mode=ParseMode.MARKDOWN)
+    await update.message.reply_text(msg, parse_mode="Markdown")
 
 
 async def week_summary(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -765,7 +763,7 @@ async def week_summary(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     if not activities:
         await update.message.reply_text("📈 No activities this week yet!",
-                        parse_mode=ParseMode.MARKDOWN)
+                        parse_mode="Markdown")
         return
     
     msg = "📈 **This Week:**\n\n"
@@ -777,7 +775,7 @@ async def week_summary(update: Update, context: ContextTypes.DEFAULT_TYPE):
         streak_txt = f" 🔥{streak}" if streak > 0 else ""
         msg += f"• {activity_name.title()}: {time_str} ({count}x){streak_txt}\n"
     
-    await update.message.reply_text(msg, parse_mode=ParseMode.MARKDOWN)
+    await update.message.reply_text(msg, parse_mode="Markdown")
 
 
 async def goals_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -791,7 +789,7 @@ async def goals_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "Examples:\n"
             "• `/setgoal prayer 600 week` - 10h/week\n"
             "• `/setgoal exercise 30 day` - 30min/day",
-            parse_mode=ParseMode.MARKDOWN
+            parse_mode="Markdown"
         )
         return
     
@@ -817,7 +815,7 @@ async def goals_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
             status = "✅" if pct >= 100 else ""
             msg += f"{activity_name.title()}\n{bar} {pct:.0f}% {status}\n{current}/{target}m\n\n"
     
-    await update.message.reply_text(msg, parse_mode=ParseMode.MARKDOWN)
+    await update.message.reply_text(msg, parse_mode="Markdown")
 
 
 async def set_goal(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -831,7 +829,7 @@ async def set_goal(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "• `/setgoal prayer 600 week` - 10h/week\n"
             "• `/setgoal exercise 30 day` - 30min/day\n"
             "• `/setgoal reading 300` - defaults to week",
-            parse_mode=ParseMode.MARKDOWN
+            parse_mode="Markdown"
         )
         return
     
@@ -839,7 +837,7 @@ async def set_goal(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         target = int(context.args[1])
     except:
-        await update.message.reply_text("❌ Invalid number!", parse_mode=ParseMode.MARKDOWN)
+        await update.message.reply_text("❌ Invalid number!", parse_mode="Markdown")
         return
     
     period = 'week'
@@ -849,7 +847,7 @@ async def set_goal(update: Update, context: ContextTypes.DEFAULT_TYPE):
             period = 'day'
         elif period_arg not in ['week', 'weekly', 'w']:
             await update.message.reply_text("❌ Invalid period! Use 'day' or 'week'",
-                                            parse_mode=ParseMode.MARKDOWN)
+                                            parse_mode="Markdown")
             return
     
     if db.set_goal(user_id, activity, target, period):
@@ -859,10 +857,10 @@ async def set_goal(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(
             f"✅ Goal set!\n"
             f"{activity.title()}: {time} {period_txt} 💪",
-            parse_mode=ParseMode.MARKDOWN
+            parse_mode="Markdown"
         )
     else:
-        await update.message.reply_text("❌ Failed to set goal!", parse_mode=ParseMode.MARKDOWN)
+        await update.message.reply_text("❌ Failed to set goal!", parse_mode="Markdown")
 
 
 async def streak_info(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -872,7 +870,7 @@ async def streak_info(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     if not activities:
         await update.message.reply_text("🔥 No activities to show streaks for yet!",
-                                        parse_mode=ParseMode.MARKDOWN)
+                                        parse_mode="Markdown")
         return
     
     msg = "🔥 **Your Streaks:**\n\n"
@@ -889,7 +887,7 @@ async def streak_info(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not has_streak:
         msg += "\n💡 Tip: Do activities daily to build streaks!"
     
-    await update.message.reply_text(msg, parse_mode=ParseMode.MARKDOWN)
+    await update.message.reply_text(msg, parse_mode="Markdown")
 
 
 async def generate_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -898,7 +896,7 @@ async def generate_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
     username = update.effective_user.first_name
     
     await update.message.reply_text("📊 Generating your report... ⏳",
-                                        parse_mode=ParseMode.MARKDOWN)
+                                        parse_mode="Markdown")
     
     try:
         pdf_buffer = generate_weekly_pdf(user_id, username)
@@ -911,8 +909,7 @@ async def generate_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         logger.error(f"Error generating report: {e}")
         await update.message.reply_text("❌ Failed to generate report. Make sure you have some activities logged!",
-                        parse_mode=ParseMode.MARKDOWN)
-
+                                        parse_mode="Markdown")
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Send help message"""
@@ -949,7 +946,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 Keep it simple - just tap buttons! 🎯
 """
-    await update.message.reply_text(help_text, parse_mode=ParseMode.MARKDOWN)
+    await update.message.reply_text(help_text, parse_mode="Markdown")
 
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -974,17 +971,17 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     period_txt = "today" if period == 'day' else "this week"
                     msg += f"\n\n🎯 Goal ({period_txt}): {current}/{target}m ({pct:.0f}%)"
             
-            await update.message.reply_text(msg, parse_mode=ParseMode.MARKDOWN)
+            await update.message.reply_text(msg, parse_mode="Markdown")
         else:
             await update.message.reply_text("❌ Failed to log!",
-                                        parse_mode=ParseMode.MARKDOWN)
+                                        parse_mode="Markdown")
     else:
         await update.message.reply_text(
             "💡 Try:\n"
             "• Tap a quick button (/buttons)\n"
             "• Or type: `prayer 30m`\n"
             "• Or use: `/log prayer 30m`",
-            parse_mode=ParseMode.MARKDOWN
+            parse_mode="Markdown"
         )
 
 
