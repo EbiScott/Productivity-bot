@@ -37,7 +37,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # Storage
-DB_FILE = 'productivity.db'
+DB_FILE = '/app/data/productivity.db'
 STORAGE_FILE = 'user_data.pkl'
 
 
